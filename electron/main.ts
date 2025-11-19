@@ -1520,14 +1520,16 @@ app.whenReady().then(async () => {
     // Create main window
     await createWindow();
 
-    // Check for updates after window is ready (only in production)
-    if (!isDev) {
+    // Check for updates after window is ready (only in packaged app)
+    if (app.isPackaged) {
       setTimeout(() => {
         console.log('[AutoUpdater] Checking for updates on startup...');
         autoUpdater.checkForUpdates().catch(err => {
           console.error('[AutoUpdater] Startup check failed:', err);
         });
       }, 3000); // Wait 3 seconds after app starts
+    } else {
+      console.log('[AutoUpdater] Skipping update check in development mode');
     }
   } catch (error) {
     console.error('Failed to start application:', error);

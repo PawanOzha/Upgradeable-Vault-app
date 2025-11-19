@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, net, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, net } from 'electron';
 import { spawn, exec, ChildProcess } from 'child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -98,19 +98,7 @@ function setupAutoUpdater() {
   autoUpdater.on('update-downloaded', (info) => {
     console.log('[AutoUpdater] Update downloaded:', info.version);
     sendUpdateStatus('update-downloaded', info);
-
-    // Show dialog to user
-    dialog.showMessageBox(mainWindow!, {
-      type: 'info',
-      title: 'Update Ready',
-      message: `Version ${info.version} has been downloaded.`,
-      detail: 'The update will be installed when you restart the app.',
-      buttons: ['Restart Now', 'Later']
-    }).then((result) => {
-      if (result.response === 0) {
-        autoUpdater.quitAndInstall();
-      }
-    });
+    // Update notification is handled by the custom UI in App.tsx
   });
 
   autoUpdater.on('error', (error) => {

@@ -1964,7 +1964,7 @@ export default function DashboardPage() {
                 <div className="text-sm font-bold text-white">EsPass</div>
               </div>
 
-              {/* {appId && (
+              {appId && (
                 <div className="px-3 py-1 bg-[#D97757]/10 border border-[#D97757]/30 rounded-lg group relative my-2">
                   <div className="text-[9px] text-gray-500 uppercase tracking-wider font-semibold mb-0.5">
                     App ID
@@ -1977,7 +1977,7 @@ export default function DashboardPage() {
                     <div className="text-gray-400">Use this to pair your browser extension</div>
                   </div>
                 </div>
-              )} */}
+              )}
 
               <div className="flex no-drag items-center gap-2">
                 <button

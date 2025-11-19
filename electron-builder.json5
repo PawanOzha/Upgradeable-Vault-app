@@ -1,9 +1,9 @@
 // @see - https://www.electron.build/configuration/configuration
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
-  "appId": "YourAppID",
+  "appId": "com.espass.app",
   "asar": true,
-  "productName": "YourAppName",
+  "productName": "EsPass",
   "directories": {
     "output": "release/${version}"
   },
@@ -11,6 +11,12 @@
     "dist",
     "dist-electron"
   ],
+  "publish": {
+    "provider": "github",
+    "owner": "PawanOzha",
+    "repo": "Upgradeable-Vault-app",
+    "releaseType": "release"
+  },
   "mac": {
     "target": [
       "dmg"

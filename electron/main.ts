@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, net } from 'electron';
+import { app, BrowserWindow, ipcMain, net, dialog } from 'electron';
 import { spawn, exec, ChildProcess } from 'child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,7 @@ import { getDb, initDb } from './lib/db.js';
 import { verifyPassword, generateSalt, hashPassword, checkLoginRateLimit, recordFailedLogin, clearLoginAttempts } from './lib/auth.js';
 import { deriveEncryptionKey, encryptPassword, decryptPassword } from './lib/encryption.js';
 import os from 'os';
+import { autoUpdater } from 'electron-updater';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -53,6 +54,66 @@ const store = new Store();
 // Global variables
 let mainWindow: BrowserWindow | null = null;
 let stickyNoteWindows = new Map<string, BrowserWindow>();
+
+// ============================================================================
+// AUTO-UPDATER CONFIGURATION
+// ============================================================================
+
+function setupAutoUpdater() {
+  // Configure auto-updater
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  // Log update events
+  autoUpdater.on('checking-for-update', () => {
+    console.log('[AutoUpdater] Checking for updates...');
+    sendUpdateStatus('checking-for-update');
+  });
+
+  autoUpdater.on('update-available', (info) => {
+    console.log('[AutoUpdater] Update available:', info.version);
+    sendUpdateStatus('update-available', info);
+  });
+
+  autoUpdater.on('update-not-available', (info) => {
+    console.log('[AutoUpdater] No updates available');
+    sendUpdateStatus('update-not-available', info);
+  });
+
+  autoUpdater.on('download-progress', (progress) => {
+    console.log(`[AutoUpdater] Download progress: ${progress.percent.toFixed(2)}%`);
+    sendUpdateStatus('download-progress', progress);
+  });
+
+  autoUpdater.on('update-downloaded', (info) => {
+    console.log('[AutoUpdater] Update downloaded:', info.version);
+    sendUpdateStatus('update-downloaded', info);
+
+    // Show dialog to user
+    dialog.showMessageBox(mainWindow!, {
+      type: 'info',
+      title: 'Update Ready',
+      message: `Version ${info.version} has been downloaded.`,
+      detail: 'The update will be installed when you restart the app.',
+      buttons: ['Restart Now', 'Later']
+    }).then((result) => {
+      if (result.response === 0) {
+        autoUpdater.quitAndInstall();
+      }
+    });
+  });
+
+  autoUpdater.on('error', (error) => {
+    console.error('[AutoUpdater] Error:', error);
+    sendUpdateStatus('error', { message: error.message });
+  });
+}
+
+function sendUpdateStatus(status: string, data?: any) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update-status', { status, data });
+  }
+}
 
 // ============================================================================
 // WEBSOCKET SERVER FOR BROWSER EXTENSION
@@ -709,6 +770,25 @@ ipcMain.handle('get-window-bounds', (event): WindowBounds | null => {
 // Get extension app ID (permanent)
 ipcMain.handle('get-app-id', () => {
   return { success: true, appId: appId };
+});
+
+// ========== AUTO-UPDATE IPC HANDLERS ==========
+ipcMain.handle('check-for-updates', async () => {
+  try {
+    const result = await autoUpdater.checkForUpdates();
+    return { success: true, result };
+  } catch (error: any) {
+    console.error('[AutoUpdater] Check failed:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('quit-and-install', () => {
+  autoUpdater.quitAndInstall();
+});
+
+ipcMain.handle('get-app-version', () => {
+  return app.getVersion();
 });
 
 // Open URL in specific browser with auto-fill credentials
@@ -1424,8 +1504,21 @@ app.whenReady().then(async () => {
     // Initialize WebSocket server for browser extension
     initWebSocketServer();
 
+    // Setup auto-updater
+    setupAutoUpdater();
+
     // Create main window
     await createWindow();
+
+    // Check for updates after window is ready (only in production)
+    if (!isDev) {
+      setTimeout(() => {
+        console.log('[AutoUpdater] Checking for updates on startup...');
+        autoUpdater.checkForUpdates().catch(err => {
+          console.error('[AutoUpdater] Startup check failed:', err);
+        });
+      }, 3000); // Wait 3 seconds after app starts
+    }
   } catch (error) {
     console.error('Failed to start application:', error);
     app.quit();

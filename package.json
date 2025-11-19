@@ -6,10 +6,16 @@
   "author": "Pawan Ojha",
   "description": "EsPass - Secure Password Manager with Enhanced Security",
   "main": "dist-electron/main.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PawanOzha/Upgradeable-Vault-app.git"
+  },
   "scripts": {
     "dev": "vite",
-    "build": "vite build && electron-builder",
+    "build": "vite build && electron-builder --publish always",
+    "build:local": "vite build && electron-builder",
     "build:win": "npm run build",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
     "preview": "vite preview"
   },
   "build": {
@@ -39,6 +45,7 @@
   "dependencies": {
     "better-sqlite3": "^12.4.1",
     "electron-store": "^11.0.2",
+    "electron-updater": "^6.6.2",
     "lucide-react": "^0.548.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

@@ -147,7 +147,19 @@ const electronAPI = {
   
   // ========== SYSTEM INFO ==========
   platform: process.platform,
-  isElectron: true
+  isElectron: true,
+
+  // ========== AUTO-UPDATE API ==========
+  update: {
+    checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+    quitAndInstall: () => ipcRenderer.invoke('quit-and-install'),
+    getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+    onUpdateStatus: (callback: (data: { status: string; data?: any }) => void) => {
+      const listener = (_event: IpcRendererEvent, data: any) => callback(data);
+      ipcRenderer.on('update-status', listener);
+      return () => ipcRenderer.removeListener('update-status', listener);
+    }
+  }
 };
 
 // ============================================================================

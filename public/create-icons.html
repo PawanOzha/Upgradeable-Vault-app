@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Create Extension Icons</title>
+</head>
+<body>
+    <h2>Creating Extension Icons...</h2>
+    <p>Open browser console (F12) and icons will be downloaded automatically.</p>
+    <canvas id="canvas"></canvas>
+    <script>
+        function createIcon(size) {
+            const canvas = document.getElementById('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const ctx = canvas.getContext('2d');
+
+            // Gradient background
+            const gradient = ctx.createLinearGradient(0, 0, size, size);
+            gradient.addColorStop(0, '#667eea');
+            gradient.addColorStop(1, '#764ba2');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, size, size);
+
+            // Lock icon
+            ctx.fillStyle = '#ffffff';
+            const centerX = size / 2;
+            const centerY = size / 2;
+            const lockSize = size * 0.6;
+
+            // Lock body
+            ctx.fillRect(centerX - lockSize/4, centerY, lockSize/2, lockSize/2);
+
+            // Lock shackle
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, lockSize/4, Math.PI, 0, true);
+            ctx.lineWidth = size * 0.1;
+            ctx.strokeStyle = '#ffffff';
+            ctx.stroke();
+
+            // Download
+            canvas.toBlob((blob) => {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `icon${size}.png`;
+                a.click();
+                URL.revokeObjectURL(url);
+            });
+        }
+
+        // Create all sizes
+        setTimeout(() => createIcon(16), 100);
+        setTimeout(() => createIcon(48), 200);
+        setTimeout(() => createIcon(128), 300);
+
+        document.body.innerHTML += '<p>Icons created! Check your downloads folder.</p>';
+    </script>
+</body>
+</html>

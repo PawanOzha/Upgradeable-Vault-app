@@ -64,6 +64,16 @@ function setupAutoUpdater() {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
+  // Set GitHub provider explicitly
+  autoUpdater.setFeedURL({
+    provider: 'github',
+    owner: 'PawanOzha',
+    repo: 'Upgradeable-Vault-app'
+  });
+
+  // Log current version
+  console.log('[AutoUpdater] Current app version:', app.getVersion());
+
   // Log update events
   autoUpdater.on('checking-for-update', () => {
     console.log('[AutoUpdater] Checking for updates...');

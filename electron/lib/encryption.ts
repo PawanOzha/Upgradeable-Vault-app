@@ -20,7 +20,16 @@ export function deriveEncryptionKey(
   salt: string
 ): Buffer {
   // Synchronous version for better-sqlite3 compatibility
-  return crypto.scryptSync(masterPassword, salt, 32);
+  // Using strong scrypt parameters: N=2^17 (131072), r=8, p=1
+  // N: CPU/memory cost parameter (higher = more secure but slower)
+  // r: Block size parameter
+  // p: Parallelization parameter
+  return crypto.scryptSync(masterPassword, salt, 32, {
+    N: 131072,  // 2^17 - strong memory hardness
+    r: 8,       // Block size
+    p: 1,       // Parallelization
+    maxmem: 256 * 1024 * 1024  // 256MB max memory
+  });
 }
 
 /**
@@ -31,7 +40,12 @@ export async function deriveEncryptionKeyAsync(
   salt: string
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    crypto.scrypt(masterPassword, salt, 32, (err, derivedKey) => {
+    crypto.scrypt(masterPassword, salt, 32, {
+      N: 131072,
+      r: 8,
+      p: 1,
+      maxmem: 256 * 1024 * 1024
+    }, (err, derivedKey) => {
       if (err) reject(err);
       else resolve(derivedKey);
     });

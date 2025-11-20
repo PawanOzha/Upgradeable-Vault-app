@@ -13,9 +13,11 @@ export function initDb() {
     try {
       // Store database in app's userData directory
       const dbPath = path.join(app.getPath('userData'), 'database.sqlite');
-      
-      db = new Database(dbPath, { verbose: console.log });
-      
+
+      // Only enable verbose logging in development mode
+      const isDev = process.env.NODE_ENV !== 'production';
+      db = new Database(dbPath, isDev ? { verbose: console.log } : {});
+
       console.log('Database connected successfully at:', dbPath);
 
       // Enable foreign keys

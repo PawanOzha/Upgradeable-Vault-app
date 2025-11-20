@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EsPass AutoFill</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 320px;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+
+    .header h1 {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 5px;
+    }
+
+    .header p {
+      font-size: 12px;
+      opacity: 0.9;
+    }
+
+    .status {
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 12px;
+      padding: 15px;
+      margin-bottom: 15px;
+      backdrop-filter: blur(10px);
+    }
+
+    .status-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+
+    .status-item:last-child {
+      margin-bottom: 0;
+    }
+
+    .status-label {
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .status-value {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+    }
+
+    .indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .indicator.connected {
+      background: #4CAF50;
+      box-shadow: 0 0 8px #4CAF50;
+    }
+
+    .indicator.disconnected {
+      background: #f44336;
+      box-shadow: 0 0 8px #f44336;
+    }
+
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .btn {
+      background: rgba(255, 255, 255, 0.2);
+      border: none;
+      border-radius: 8px;
+      padding: 12px;
+      color: white;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      backdrop-filter: blur(10px);
+    }
+
+    .btn:hover {
+      background: rgba(255, 255, 255, 0.3);
+      transform: translateY(-1px);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .footer {
+      margin-top: 15px;
+      text-align: center;
+      font-size: 11px;
+      opacity: 0.8;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🔐 EsPass</h1>
+    <p>Password Manager Extension</p>
+  </div>
+
+  <div class="status">
+    <div class="status-item">
+      <span class="status-label">Connection</span>
+      <span class="status-value">
+        <span class="indicator disconnected" id="statusIndicator"></span>
+        <span id="statusText">Connecting...</span>
+      </span>
+    </div>
+    <div class="status-item">
+      <span class="status-label">Pairing</span>
+      <span class="status-value">
+        <span class="indicator disconnected" id="pairingIndicator"></span>
+        <span id="pairingText">Not Paired</span>
+      </span>
+    </div>
+  </div>
+
+  <!-- Pairing Section -->
+  <div id="pairingSection" style="display: none; margin-bottom: 15px;">
+    <div style="background: rgba(255, 255, 255, 0.1); border-radius: 8px; padding: 12px;">
+      <p style="font-size: 11px; margin-bottom: 4px; opacity: 0.9; font-weight: 600;">🔐 One-Time Setup (256-bit)</p>
+      <p style="font-size: 10px; margin-bottom: 8px; opacity: 0.75;">Enter the App ID from your EsPass app (top right corner):</p>
+      <textarea id="pairingCodeInput" maxlength="64" placeholder="64-character App ID" 
+        style="width: 100%; height: 60px; background: rgba(255, 255, 255, 0.2); border: none; border-radius: 6px; padding: 8px; color: white; font-size: 10px; font-family: 'Courier New', monospace; font-weight: bold; text-transform: uppercase; resize: none; word-break: break-all;"></textarea>
+      <button class="btn" id="pairBtn" style="padding: 8px 16px; width: 100%; margin-top: 8px;">Pair</button>
+      <p style="font-size: 9px; margin-top: 6px; opacity: 0.7; text-align: center;">✅ This pairs your extension permanently (256-bit security)</p>
+      <p id="pairingError" style="font-size: 10px; color: #ffcccc; margin-top: 6px; display: none;"></p>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="btn" id="fillCurrentPage">🔑 Fill Current Page</button>
+    <button class="btn" id="testConnection">🔄 Reconnect</button>
+  </div>
+
+  <div class="footer">
+    EsPass v1.2.0 (256-bit)
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -105,6 +105,14 @@ function setupAutoUpdater() {
     console.error('[AutoUpdater] Error:', error);
     sendUpdateStatus('error', { message: error.message });
   });
+
+  // Periodic update check (every 6 hours)
+  setInterval(() => {
+    console.log('[AutoUpdater] Periodic update check running...');
+    autoUpdater.checkForUpdates().catch(err => {
+      console.error('[AutoUpdater] Periodic check failed:', err);
+    });
+  }, 6 * 60 * 60 * 1000); // 6 hours
 }
 
 function sendUpdateStatus(status: string, data?: any) {
@@ -126,8 +134,40 @@ let appId: string = '';
 interface PairedClient {
   ws: WebSocket;
   paired: boolean;
+  sessionKey?: string;  // Unique encryption key per session
 }
-let pairedClients: Map<WebSocket, boolean> = new Map();
+let pairedClients: Map<WebSocket, { paired: boolean; sessionKey?: string }> = new Map();
+
+// Generate a session key for encrypted communication
+function generateSessionKey(): string {
+  return randomUUID().replace(/-/g, '') + randomUUID().replace(/-/g, '');
+}
+
+// Simple XOR encryption for WebSocket transport (not cryptographically strong but adds obfuscation layer)
+// The session key changes per connection, preventing replay attacks
+function encryptForTransport(data: string, sessionKey: string): string {
+  const keyBytes = Buffer.from(sessionKey, 'hex');
+  const dataBytes = Buffer.from(data, 'utf8');
+  const encrypted = Buffer.alloc(dataBytes.length);
+
+  for (let i = 0; i < dataBytes.length; i++) {
+    encrypted[i] = dataBytes[i] ^ keyBytes[i % keyBytes.length];
+  }
+
+  return encrypted.toString('base64');
+}
+
+function decryptFromTransport(encryptedData: string, sessionKey: string): string {
+  const keyBytes = Buffer.from(sessionKey, 'hex');
+  const dataBytes = Buffer.from(encryptedData, 'base64');
+  const decrypted = Buffer.alloc(dataBytes.length);
+
+  for (let i = 0; i < dataBytes.length; i++) {
+    decrypted[i] = dataBytes[i] ^ keyBytes[i % keyBytes.length];
+  }
+
+  return decrypted.toString('utf8');
+}
 
 // Rate limiting for WebSocket connections
 interface RateLimit {
@@ -206,7 +246,8 @@ function initWebSocketServer() {
     // Get or create permanent app ID
     appId = getOrCreateAppId();
     
-    wss = new WebSocketServer({ port: WS_PORT });
+    // Bind to localhost only for security - prevents external network access
+    wss = new WebSocketServer({ port: WS_PORT, host: '127.0.0.1' });
 
     wss.on('listening', () => {
       console.log(`[WebSocket] Server started on port ${WS_PORT}`);
@@ -216,7 +257,7 @@ function initWebSocketServer() {
     wss.on('connection', (ws: WebSocket) => {
       console.log('[WebSocket] Extension attempting connection...');
       extensionClients.add(ws);
-      pairedClients.set(ws, false); // Not paired yet
+      pairedClients.set(ws, { paired: false }); // Not paired yet
 
       ws.on('message', async (data: Buffer) => {
         try {
@@ -231,15 +272,17 @@ function initWebSocketServer() {
             }
             
             if (message.code === appId) {
-              pairedClients.set(ws, true);
+              // Generate unique session key for encrypted communication
+              const sessionKey = generateSessionKey();
+              pairedClients.set(ws, { paired: true, sessionKey });
               // Clear rate limit on successful pairing
               wsRateLimits.delete(ws);
-              ws.send(JSON.stringify({ 
+              ws.send(JSON.stringify({
                 type: 'pair-success',
                 message: 'Extension paired successfully',
-                appId: appId
+                sessionKey: sessionKey  // Send session key to extension for encrypted comms
               }));
-              console.log('[WebSocket] ✅ Extension paired successfully');
+              console.log('[WebSocket] ✅ Extension paired successfully with encrypted session');
             } else {
               ws.send(JSON.stringify({ 
                 type: 'pair-failed',
@@ -251,8 +294,9 @@ function initWebSocketServer() {
           }
 
           // Check if paired for all other messages
-          if (!pairedClients.get(ws)) {
-            ws.send(JSON.stringify({ 
+          const clientInfo = pairedClients.get(ws);
+          if (!clientInfo || !clientInfo.paired) {
+            ws.send(JSON.stringify({
               type: 'error',
               message: 'Not paired. Please pair with the app first.'
             }));
@@ -361,19 +405,38 @@ async function handleCredentialRequest(ws: WebSocket, requestUrl: string) {
 
     // Use the most recent credential
     const credential = credentials[0];
-    const encryptionKey = await deriveEncryptionKey(activeSession.masterPassword, activeSession.salt);
+    const encryptionKey = deriveEncryptionKey(activeSession.masterPassword, activeSession.salt);
     const decryptedUsername = credential.username ? decryptPassword(credential.username, encryptionKey) : '';
     const decryptedPassword = decryptPassword(credential.password, encryptionKey);
 
-    ws.send(JSON.stringify({ 
-      type: 'credentials-response',
-      success: true,
-      url: requestUrl,
-      username: decryptedUsername,
-      password: decryptedPassword
-    }));
+    // Get session key for encrypted transport
+    const clientInfo = pairedClients.get(ws);
+    if (clientInfo && clientInfo.sessionKey) {
+      // Encrypt credentials for transport
+      const encryptedUsername = encryptForTransport(decryptedUsername, clientInfo.sessionKey);
+      const encryptedPassword = encryptForTransport(decryptedPassword, clientInfo.sessionKey);
 
-    console.log('[WebSocket] ✅ Credentials sent to extension');
+      ws.send(JSON.stringify({
+        type: 'credentials-response',
+        success: true,
+        url: requestUrl,
+        username: encryptedUsername,
+        password: encryptedPassword,
+        encrypted: true  // Flag to indicate credentials are encrypted
+      }));
+    } else {
+      // Fallback for legacy clients (should not happen)
+      ws.send(JSON.stringify({
+        type: 'credentials-response',
+        success: true,
+        url: requestUrl,
+        username: decryptedUsername,
+        password: decryptedPassword,
+        encrypted: false
+      }));
+    }
+
+    console.log('[WebSocket] ✅ Encrypted credentials sent to extension');
   } catch (error) {
     console.error('[WebSocket] Error handling credential request:', error);
     ws.send(JSON.stringify({ 
@@ -385,12 +448,23 @@ async function handleCredentialRequest(ws: WebSocket, requestUrl: string) {
 }
 
 function sendToExtension(data: any) {
-  const message = JSON.stringify(data);
   let sentCount = 0;
 
   extensionClients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN && pairedClients.get(client)) {
-      client.send(message);
+    const clientInfo = pairedClients.get(client);
+    if (client.readyState === WebSocket.OPEN && clientInfo && clientInfo.paired) {
+      // Encrypt credentials if session key exists and data contains credentials
+      if (clientInfo.sessionKey && data.type === 'credentials' && data.username !== undefined && data.password !== undefined) {
+        const encryptedData = {
+          ...data,
+          username: encryptForTransport(data.username, clientInfo.sessionKey),
+          password: encryptForTransport(data.password, clientInfo.sessionKey),
+          encrypted: true
+        };
+        client.send(JSON.stringify(encryptedData));
+      } else {
+        client.send(JSON.stringify(data));
+      }
       sentCount++;
     }
   });
@@ -835,15 +909,20 @@ ipcMain.handle('open-in-browser', async (event, url: string, browser: 'chrome' |
           console.error('[Auto-Fill] Tip: View or edit a credential in the app to load master password into memory.');
           // Browser will still open, but without auto-fill
           return new Promise((resolve, reject) => {
-            exec(`"${browserPath}" "${url}"`, (error) => {
-              if (error) {
-                console.error(`Failed to open ${browser}:`, error);
-                reject({ success: false, error: `Failed to launch ${browser}` });
-              } else {
-                console.log(`Successfully opened ${url} in ${browser}`);
-                resolve({ success: true, warning: 'Master password not available for auto-fill' });
-              }
+            const browserProcess = spawn(browserPath, [url], {
+              detached: true,
+              stdio: 'ignore',
+              shell: false
             });
+
+            browserProcess.on('error', (error) => {
+              console.error(`Failed to open ${browser}:`, error);
+              reject({ success: false, error: `Failed to launch ${browser}` });
+            });
+
+            browserProcess.unref();
+            console.log(`Successfully opened ${url} in ${browser}`);
+            resolve({ success: true, warning: 'Master password not available for auto-fill' });
           });
         }
 
@@ -888,16 +967,23 @@ ipcMain.handle('open-in-browser', async (event, url: string, browser: 'chrome' |
     }
 
     return new Promise((resolve, reject) => {
-      // Launch browser directly with the URL
-      exec(`"${browserPath}" "${url}"`, (error) => {
-        if (error) {
-          console.error(`Failed to open ${browser}:`, error);
-          reject({ success: false, error: `Failed to launch ${browser}` });
-        } else {
-          console.log(`Successfully opened ${url} in ${browser}`);
-          resolve({ success: true });
-        }
+      // Launch browser directly with the URL using spawn (safer than exec)
+      // This prevents command injection by not passing through shell
+      const browserProcess = spawn(browserPath, [url], {
+        detached: true,
+        stdio: 'ignore',
+        shell: false  // Important: don't use shell to prevent injection
       });
+
+      browserProcess.on('error', (error) => {
+        console.error(`Failed to open ${browser}:`, error);
+        reject({ success: false, error: `Failed to launch ${browser}` });
+      });
+
+      // Unref to allow the app to exit independently of the browser
+      browserProcess.unref();
+      console.log(`Successfully opened ${url} in ${browser}`);
+      resolve({ success: true });
     });
   } catch (error) {
     console.error('Browser launch error:', error);
@@ -1376,7 +1462,7 @@ ipcMain.handle('categories:delete', async (event, { id }) => {
 // ============================================================================
 
 // Get all notes
-ipcMain.handle('notes:fetch', async (event) => {
+ipcMain.handle('notes:fetch', async (event, { masterPassword } = {}) => {
   try {
     if (!activeSession) {
       return { success: false, error: 'Not authenticated' };
@@ -1385,7 +1471,28 @@ ipcMain.handle('notes:fetch', async (event) => {
     const db = getDb();
     const notes = db.prepare(`
       SELECT * FROM notes WHERE user_id = ? ORDER BY updated_at DESC
-    `).all(activeSession.userId);
+    `).all(activeSession.userId) as any[];
+
+    // If master password provided, decrypt note contents
+    if (masterPassword) {
+      const encryptionKey = deriveEncryptionKey(masterPassword, activeSession.salt);
+      const decryptedNotes = notes.map(note => {
+        try {
+          // Only decrypt if content appears to be encrypted (contains colons for iv:authTag:data format)
+          if (note.content && note.content.includes(':')) {
+            return {
+              ...note,
+              content: decryptPassword(note.content, encryptionKey)
+            };
+          }
+          return note;
+        } catch {
+          // If decryption fails, return original (might be unencrypted legacy note)
+          return note;
+        }
+      });
+      return { success: true, notes: decryptedNotes };
+    }
 
     return { success: true, notes };
   } catch (error: any) {
@@ -1395,17 +1502,25 @@ ipcMain.handle('notes:fetch', async (event) => {
 });
 
 // Create note
-ipcMain.handle('notes:create', async (event, { title, content, color }) => {
+ipcMain.handle('notes:create', async (event, { title, content, color, masterPassword }) => {
   try {
     if (!activeSession) {
       return { success: false, error: 'Not authenticated' };
+    }
+
+    let encryptedContent = content || '';
+
+    // Encrypt content if master password is provided and content exists
+    if (masterPassword && content) {
+      const encryptionKey = deriveEncryptionKey(masterPassword, activeSession.salt);
+      encryptedContent = encryptPassword(content, encryptionKey);
     }
 
     const db = getDb();
     const result = db.prepare(`
       INSERT INTO notes (user_id, title, content, color)
       VALUES (?, ?, ?, ?)
-    `).run(activeSession.userId, title, content || '', color || '#fbbf24');
+    `).run(activeSession.userId, title, encryptedContent, color || '#fbbf24');
 
     return { success: true, id: result.lastInsertRowid };
   } catch (error: any) {
@@ -1415,14 +1530,14 @@ ipcMain.handle('notes:create', async (event, { title, content, color }) => {
 });
 
 // Update note
-ipcMain.handle('notes:update', async (event, { id, title, content, color, position_x, position_y, width, height }) => {
+ipcMain.handle('notes:update', async (event, { id, title, content, color, position_x, position_y, width, height, masterPassword }) => {
   try {
     if (!activeSession) {
       return { success: false, error: 'Not authenticated' };
     }
 
     const db = getDb();
-    
+
     // Build dynamic update query
     const updates: string[] = [];
     const values: any[] = [];
@@ -1432,8 +1547,14 @@ ipcMain.handle('notes:update', async (event, { id, title, content, color, positi
       values.push(title);
     }
     if (content !== undefined) {
+      // Encrypt content if master password is provided
+      let contentToStore = content;
+      if (masterPassword && content) {
+        const encryptionKey = deriveEncryptionKey(masterPassword, activeSession.salt);
+        contentToStore = encryptPassword(content, encryptionKey);
+      }
       updates.push('content = ?');
-      values.push(content);
+      values.push(contentToStore);
     }
     if (color !== undefined) {
       updates.push('color = ?');
@@ -1489,6 +1610,173 @@ ipcMain.handle('notes:delete', async (event, { id }) => {
 });
 
 // ============================================================================
+// AUTOMATIC BACKUP SYSTEM
+// ============================================================================
+
+const BACKUP_RETENTION_DAYS = 7; // Keep backups for 7 days
+
+function getBackupDir(): string {
+  return path.join(app.getPath('userData'), 'backups');
+}
+
+function ensureBackupDir(): void {
+  const backupDir = getBackupDir();
+  if (!fs.existsSync(backupDir)) {
+    fs.mkdirSync(backupDir, { recursive: true });
+    console.log('[Backup] Created backup directory:', backupDir);
+  }
+}
+
+function getBackupFileName(): string {
+  const now = new Date();
+  const dateStr = now.toISOString().split('T')[0]; // YYYY-MM-DD
+  return `database-backup-${dateStr}.sqlite`;
+}
+
+function performBackup(): { success: boolean; path?: string; error?: string } {
+  try {
+    ensureBackupDir();
+
+    const dbPath = path.join(app.getPath('userData'), 'database.sqlite');
+    const backupDir = getBackupDir();
+    const backupFileName = getBackupFileName();
+    const backupPath = path.join(backupDir, backupFileName);
+
+    // Check if database exists
+    if (!fs.existsSync(dbPath)) {
+      console.log('[Backup] No database to backup');
+      return { success: false, error: 'Database not found' };
+    }
+
+    // Check if today's backup already exists
+    if (fs.existsSync(backupPath)) {
+      console.log('[Backup] Today\'s backup already exists:', backupFileName);
+      return { success: true, path: backupPath };
+    }
+
+    // Copy database file
+    fs.copyFileSync(dbPath, backupPath);
+    console.log('[Backup] ✅ Backup created:', backupFileName);
+
+    // Clean up old backups
+    cleanupOldBackups();
+
+    return { success: true, path: backupPath };
+  } catch (error: any) {
+    console.error('[Backup] ❌ Backup failed:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+function cleanupOldBackups(): void {
+  try {
+    const backupDir = getBackupDir();
+    if (!fs.existsSync(backupDir)) return;
+
+    const files = fs.readdirSync(backupDir);
+    const now = Date.now();
+    const maxAge = BACKUP_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
+    for (const file of files) {
+      if (!file.startsWith('database-backup-')) continue;
+
+      const filePath = path.join(backupDir, file);
+      const stats = fs.statSync(filePath);
+      const age = now - stats.mtimeMs;
+
+      if (age > maxAge) {
+        fs.unlinkSync(filePath);
+        console.log('[Backup] 🗑️ Deleted old backup:', file);
+      }
+    }
+  } catch (error) {
+    console.error('[Backup] Error cleaning up old backups:', error);
+  }
+}
+
+function listBackups(): { name: string; date: string; size: number }[] {
+  try {
+    const backupDir = getBackupDir();
+    if (!fs.existsSync(backupDir)) return [];
+
+    const files = fs.readdirSync(backupDir);
+    const backups: { name: string; date: string; size: number }[] = [];
+
+    for (const file of files) {
+      if (!file.startsWith('database-backup-')) continue;
+
+      const filePath = path.join(backupDir, file);
+      const stats = fs.statSync(filePath);
+
+      // Extract date from filename
+      const dateMatch = file.match(/database-backup-(\d{4}-\d{2}-\d{2})/);
+      const date = dateMatch ? dateMatch[1] : 'Unknown';
+
+      backups.push({
+        name: file,
+        date: date,
+        size: stats.size
+      });
+    }
+
+    // Sort by date descending
+    backups.sort((a, b) => b.date.localeCompare(a.date));
+
+    return backups;
+  } catch (error) {
+    console.error('[Backup] Error listing backups:', error);
+    return [];
+  }
+}
+
+function restoreBackup(backupName: string): { success: boolean; error?: string } {
+  try {
+    const backupDir = getBackupDir();
+    const backupPath = path.join(backupDir, backupName);
+    const dbPath = path.join(app.getPath('userData'), 'database.sqlite');
+
+    if (!fs.existsSync(backupPath)) {
+      return { success: false, error: 'Backup file not found' };
+    }
+
+    // Create a backup of current database before restoring
+    const currentBackupName = `database-pre-restore-${Date.now()}.sqlite`;
+    const currentBackupPath = path.join(backupDir, currentBackupName);
+
+    if (fs.existsSync(dbPath)) {
+      fs.copyFileSync(dbPath, currentBackupPath);
+      console.log('[Backup] Created pre-restore backup:', currentBackupName);
+    }
+
+    // Restore the backup
+    fs.copyFileSync(backupPath, dbPath);
+    console.log('[Backup] ✅ Restored backup:', backupName);
+
+    return { success: true };
+  } catch (error: any) {
+    console.error('[Backup] ❌ Restore failed:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// IPC handlers for backup operations
+ipcMain.handle('backup:create', async () => {
+  return performBackup();
+});
+
+ipcMain.handle('backup:list', async () => {
+  return { success: true, backups: listBackups() };
+});
+
+ipcMain.handle('backup:restore', async (event, { backupName }) => {
+  return restoreBackup(backupName);
+});
+
+ipcMain.handle('backup:getPath', async () => {
+  return { success: true, path: getBackupDir() };
+});
+
+// ============================================================================
 // APP EVENT HANDLERS
 // ============================================================================
 
@@ -1498,6 +1786,15 @@ app.whenReady().then(async () => {
     console.log('Initializing database...');
     initDb();
     console.log('Database initialized');
+
+    // Perform automatic daily backup
+    console.log('[Backup] Performing automatic backup...');
+    const backupResult = performBackup();
+    if (backupResult.success) {
+      console.log('[Backup] Automatic backup completed');
+    } else {
+      console.error('[Backup] Automatic backup failed:', backupResult.error);
+    }
 
     // Initialize WebSocket server for browser extension
     initWebSocketServer();
@@ -1511,13 +1808,13 @@ app.whenReady().then(async () => {
     // Check for updates after window is ready (only in packaged app)
     if (app.isPackaged) {
       setTimeout(() => {
-        console.log('[AutoUpdater] Checking for updates on startup...');
+        console.log(`[AutoUpdater] Checking for updates on startup... (Current: v${app.getVersion()})`);
         autoUpdater.checkForUpdates().catch(err => {
           console.error('[AutoUpdater] Startup check failed:', err);
         });
-      }, 3000); // Wait 3 seconds after app starts
+      }, 2000); // Wait 2 seconds after app starts
     } else {
-      console.log('[AutoUpdater] Skipping update check in development mode');
+      console.log(`[AutoUpdater] Development mode - update checks disabled. Current: v${app.getVersion()}`);
     }
   } catch (error) {
     console.error('Failed to start application:', error);

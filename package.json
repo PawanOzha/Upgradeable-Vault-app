@@ -1,7 +1,7 @@
 {
   "name": "espass",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "module",
   "author": "Pawan Ojha",
   "description": "EsPass - Secure Password Manager with Enhanced Security",

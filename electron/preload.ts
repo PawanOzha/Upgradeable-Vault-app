@@ -163,38 +163,115 @@ const electronAPI = {
 };
 
 // ============================================================================
-// IPC RENDERER - Vite-Electron Generic IPC API
+// IPC RENDERER - Secure IPC API with Channel Whitelisting
 // ============================================================================
+
+// Whitelist of allowed channels for security
+const ALLOWED_SEND_CHANNELS = [
+  'app-message',
+  'window-minimize',
+  'window-maximize',
+  'window-close',
+  'sticky-note-minimize',
+  'sticky-note-close',
+  'sticky-note-toggle-always-on-top',
+  'open-sticky-note',
+  'close-sticky-note-window'
+];
+
+const ALLOWED_RECEIVE_CHANNELS = [
+  'app-reply',
+  'main-process-message',
+  'update-status',
+  'window-bounds-changed',
+  'sticky-note-always-on-top-changed',
+  'clear-session-storage',
+  'prompt-master-password'
+];
+
+const ALLOWED_INVOKE_CHANNELS = [
+  'auth:signup',
+  'auth:login',
+  'auth:verify',
+  'auth:logout',
+  'credentials:fetch',
+  'credentials:create',
+  'credentials:update',
+  'credentials:delete',
+  'categories:fetch',
+  'categories:create',
+  'categories:update',
+  'categories:delete',
+  'notes:fetch',
+  'notes:create',
+  'notes:update',
+  'notes:delete',
+  'backup:create',
+  'backup:list',
+  'backup:restore',
+  'backup:getPath',
+  'check-for-updates',
+  'quit-and-install',
+  'get-app-version',
+  'get-app-id',
+  'get-window-bounds',
+  'open-in-browser',
+  'master-password-response'
+];
 
 const ipcRendererAPI = {
   on(channel: string, listener: (event: IpcRendererEvent, ...args: any[]) => void) {
+    if (!ALLOWED_RECEIVE_CHANNELS.includes(channel)) {
+      console.warn(`[Security] Blocked listening on unauthorized channel: ${channel}`);
+      return () => {};
+    }
     ipcRenderer.on(channel, listener);
     // Return cleanup function
     return () => ipcRenderer.removeListener(channel, listener);
   },
-  
+
   off(channel: string, listener?: (...args: any[]) => void) {
+    if (!ALLOWED_RECEIVE_CHANNELS.includes(channel)) {
+      console.warn(`[Security] Blocked removing listener on unauthorized channel: ${channel}`);
+      return;
+    }
     if (listener) {
       ipcRenderer.removeListener(channel, listener);
     } else {
       ipcRenderer.removeAllListeners(channel);
     }
   },
-  
+
   send(channel: string, ...args: any[]) {
+    if (!ALLOWED_SEND_CHANNELS.includes(channel)) {
+      console.warn(`[Security] Blocked send on unauthorized channel: ${channel}`);
+      return;
+    }
     ipcRenderer.send(channel, ...args);
   },
-  
+
   invoke(channel: string, ...args: any[]): Promise<any> {
+    if (!ALLOWED_INVOKE_CHANNELS.includes(channel)) {
+      console.warn(`[Security] Blocked invoke on unauthorized channel: ${channel}`);
+      return Promise.reject(new Error(`Unauthorized channel: ${channel}`));
+    }
     return ipcRenderer.invoke(channel, ...args);
   },
-  
+
   // Additional utility methods
   once(channel: string, listener: (event: IpcRendererEvent, ...args: any[]) => void) {
+    if (!ALLOWED_RECEIVE_CHANNELS.includes(channel)) {
+      console.warn(`[Security] Blocked once on unauthorized channel: ${channel}`);
+      return;
+    }
     ipcRenderer.once(channel, listener);
   },
-  
+
   removeAllListeners(channel: string) {
+    if (!ALLOWED_RECEIVE_CHANNELS.includes(channel)) {
+      console.warn(`[Security] Blocked removeAllListeners on unauthorized channel: ${channel}`);
+      return;
+    }
     ipcRenderer.removeAllListeners(channel);
   }
 };

@@ -124,11 +124,35 @@ export function checkPasswordStrength(password: string): PasswordStrength {
     feedback.push('Add special characters (!@#$%^&*)');
   }
 
-  // Check for common passwords (basic check)
-  const commonPasswords = ['password', '123456', 'qwerty', 'admin'];
+  // Check for common passwords (comprehensive check)
+  const commonPasswords = [
+    'password', '123456', 'qwerty', 'admin', 'letmein', 'welcome',
+    '12345678', '123456789', '1234567890', 'password1', 'password123',
+    'abc123', 'monkey', 'master', 'dragon', 'iloveyou', 'trustno1',
+    'sunshine', 'princess', 'football', 'baseball', 'soccer', 'hockey',
+    'superman', 'batman', 'michael', 'jennifer', 'shadow', 'ashley',
+    'passw0rd', '1234567', '12345', 'qwerty123', 'login', 'starwars',
+    'hello', 'charlie', 'donald', 'computer', 'access', 'thunder',
+    'mustang', 'jennifer', 'harley', 'ranger', 'thomas', 'jordan',
+    'robert', 'daniel', 'andrew', 'joshua', 'matthew', 'whatever',
+    'nicole', 'jessica', 'pepper', 'hunter', 'buster', 'george'
+  ];
   if (commonPasswords.some(common => password.toLowerCase().includes(common))) {
     feedback.push('Avoid common passwords');
     score = Math.max(0, score - 2);
+  }
+
+  // Check for sequential patterns
+  const sequentialPatterns = ['123', 'abc', 'qwe', 'asd', 'zxc', '987', '321'];
+  if (sequentialPatterns.some(pattern => password.toLowerCase().includes(pattern))) {
+    feedback.push('Avoid sequential patterns');
+    score = Math.max(0, score - 1);
+  }
+
+  // Check for repeated characters
+  if (/(.)\1{2,}/.test(password)) {
+    feedback.push('Avoid repeated characters');
+    score = Math.max(0, score - 1);
   }
 
   // Normalize score to 0-4

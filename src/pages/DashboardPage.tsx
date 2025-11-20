@@ -161,6 +161,7 @@ export default function DashboardPage() {
   const [masterPassword, setMasterPassword] = useState<string>('');
   const [showMasterPasswordPrompt, setShowMasterPasswordPrompt] = useState(false);
   const [appId, setAppId] = useState<string>('');
+  const [appVersion, setAppVersion] = useState<string>('');
   const [categories, setCategories] = useState<Category[]>([]);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [filteredCredentials, setFilteredCredentials] = useState<Credential[]>([]);
@@ -276,6 +277,16 @@ export default function DashboardPage() {
         if (result.success) {
           setAppId(result.appId);
         }
+      });
+    }
+
+    // Fetch app version
+    if (window.electronAPI && window.electronAPI.update?.getAppVersion) {
+      window.electronAPI.update.getAppVersion().then((version: string) => {
+        setAppVersion(version);
+        console.log('[Dashboard] App version:', version);
+      }).catch((error: any) => {
+        console.error('[Dashboard] Failed to get version:', error);
       });
     }
   }, []);
@@ -872,7 +883,7 @@ export default function DashboardPage() {
 
   // ========== RENDER ==========
   return (
-      <div className="min-h-screen bg-[#262624]">
+      <div className="h-screen overflow-hidden bg-[#262624]">
         {/* Custom Scrollbar Styles */}
         <style>{`
         .custom-scrollbar::-webkit-scrollbar {
@@ -937,8 +948,8 @@ export default function DashboardPage() {
       `}</style>
 
       {/* ===== HEADER / TITLE BAR ===== */}
-      <header className="fixed top-0 drag left-0 right-0 h-14 bg-[#30302E] border-b border-[#3a3a38] z-40">
-        <div className="flex items-center justify-between h-full px-4">
+      <header className="fixed top-0 drag left-0 right-0 h-16 bg-[#30302E] border-b border-[#3a3a38] z-40">
+        <div className="flex items-center justify-between h-full px-4 pt-1">
           <div className="flex items-center gap-3 min-w-fit">
             <div className="flex items-center justify-center w-8 h-8 bg-[#D97757] rounded-lg">
               <Lock className="w-4 h-4 text-white" />
@@ -975,13 +986,13 @@ export default function DashboardPage() {
             {/* Permanent App ID Display */}
             {appId && (
               <>
-                <div className="px-3 py-1 bg-[#D97757]/10 border border-[#D97757]/30 rounded-lg group relative my-2">
-                  <div className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mb-0.5">
-                    App ID (256-bit)
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="text-sm font-bold text-[#D97757] font-mono">
-                      {appId.substring(0, 5)}...
+                <div className="px-2 py-1 bg-[#D97757]/10 border border-[#D97757]/30 rounded-md group relative">
+                  <div className="flex items-center gap-1.5">
+                    <div className="text-[9px] text-gray-500 uppercase tracking-wider font-semibold">
+                      App ID
+                    </div>
+                    <div className="text-xs font-bold text-[#D97757] font-mono">
+                      {appId.substring(0, 4)}...
                     </div>
                     <button
                       onClick={() => {
@@ -989,17 +1000,17 @@ export default function DashboardPage() {
                         setCopiedId('appId');
                         setTimeout(() => setCopiedId(null), 2000);
                       }}
-                      className="p-1 hover:bg-[#D97757]/20 rounded transition-colors"
+                      className="p-0.5 hover:bg-[#D97757]/20 rounded transition-colors"
                       title="Copy full App ID"
                     >
                       {copiedId === 'appId' ? (
-                        <CheckCircle className="w-4 h-4 text-emerald-400" />
+                        <CheckCircle className="w-3 h-3 text-emerald-400" />
                       ) : (
-                        <Copy className="w-4 h-4 text-[#D97757]" />
+                        <Copy className="w-3 h-3 text-[#D97757]" />
                       )}
                     </button>
                   </div>
-                  <div className="absolute hidden group-hover:block bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-[#262624] border border-[#3a3a38] rounded-lg text-xs text-gray-300 whitespace-nowrap shadow-xl z-10">
+                  <div className="absolute hidden group-hover:block top-full left-1/2 transform -translate-x-1/2 mt-2 px-3 py-2 bg-[#262624] border border-[#3a3a38] rounded-lg text-xs text-gray-300 whitespace-nowrap shadow-xl z-50">
                     <div className="font-semibold mb-1">Click to copy full App ID</div>
                     <div className="text-gray-400">Use this to pair your browser extension</div>
                     <div className="text-gray-500 mt-1">64 characters · Ultra secure</div>
@@ -1020,6 +1031,7 @@ export default function DashboardPage() {
             <div className="text-right">
               <div className="text-sm font-medium text-white">Welcome, {user?.username}</div>
               <div className="text-xs text-emerald-400 font-medium">● Vault Unlocked</div>
+              {appVersion && <div className="text-xs text-gray-500 mt-1">v{appVersion}</div>}
             </div>
 
             <div className="h-8 w-px bg-[#3a3a38]"></div>
@@ -1044,7 +1056,7 @@ export default function DashboardPage() {
       </header>
 
       {/* ===== MAIN CONTENT ===== */}
-      <div className="flex pt-14 h-screen">
+      <div className="flex pt-16 h-screen">
         {/* Sidebar - Fixed, no scroll */}
         <aside className="w-64 border-r border-[#3a3a38] h-[calc(100vh-3.5rem)] flex flex-col bg-[#30302E]">
           <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">

@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   Eye, EyeOff, Plus, Edit2, Trash2, X, Search, User,
   Lock, FolderPlus, Copy, ExternalLink, CheckCircle, AlertCircle,
-  LogOut, Minus, StickyNote, Maximize2, Mail, ShieldCheck, Sparkles
+  LogOut, Minus, StickyNote, Maximize2, Mail, ShieldCheck, Sparkles, Key
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { useEffect, useState, useRef } from 'react';
@@ -218,6 +218,14 @@ export default function DashboardPage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isReformatting, setIsReformatting] = useState(false);
   const [reformattedEmail, setReformattedEmail] = useState<{ subject: string; body: string } | null>(null);
+
+  // API Keys
+  const [showApiKeys, setShowApiKeys] = useState(false);
+  const [apiKeys, setApiKeys] = useState<any[]>([]);
+  const [apiKeyProvider, setApiKeyProvider] = useState('openai');
+  const [apiKeyValue, setApiKeyValue] = useState('');
+  const [isSavingApiKey, setIsSavingApiKey] = useState(false);
+
   const [editingCredential, setEditingCredential] = useState<Credential | null>(null);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
 
@@ -1048,6 +1056,67 @@ export default function DashboardPage() {
     }
   };
 
+  // ========== API KEY MANAGEMENT ==========
+  const loadApiKeys = async () => {
+    try {
+      if (typeof window !== 'undefined' && window.ipcRenderer) {
+        const result = await window.ipcRenderer.invoke('apikeys:fetch');
+        if (result.success) {
+          setApiKeys(result.apiKeys || []);
+        }
+      }
+    } catch (error) {
+      console.error('Error loading API keys:', error);
+    }
+  };
+
+  const saveApiKey = async () => {
+    if (!apiKeyValue.trim()) {
+      addToast('Please enter an API key', 'error');
+      return;
+    }
+
+    setIsSavingApiKey(true);
+    try {
+      if (typeof window !== 'undefined' && window.ipcRenderer) {
+        const result = await window.ipcRenderer.invoke('apikeys:save', {
+          provider: apiKeyProvider,
+          apiKey: apiKeyValue.trim()
+        });
+
+        if (result.success) {
+          addToast('API key saved successfully', 'success');
+          setApiKeyValue('');
+          loadApiKeys();
+        } else {
+          addToast(result.error || 'Failed to save API key', 'error');
+        }
+      }
+    } catch (error) {
+      console.error('Error saving API key:', error);
+      addToast('Failed to save API key', 'error');
+    } finally {
+      setIsSavingApiKey(false);
+    }
+  };
+
+  const deleteApiKey = async (provider: string) => {
+    try {
+      if (typeof window !== 'undefined' && window.ipcRenderer) {
+        const result = await window.ipcRenderer.invoke('apikeys:delete', { provider });
+        if (result.success) {
+          addToast('API key deleted', 'success');
+          loadApiKeys();
+        } else {
+          addToast('Failed to delete API key', 'error');
+        }
+      }
+    } catch (error) {
+      console.error('Error deleting API key:', error);
+      addToast('Failed to delete API key', 'error');
+    }
+  };
+
   // ========== FORM HELPERS ==========
   const openEditModal = (credential: Credential) => {
     setEditingCredential(credential);
@@ -1519,6 +1588,21 @@ export default function DashboardPage() {
               </button>
               <p className="text-[10px] text-gray-500 text-center mt-1.5">Check email for spam triggers</p>
             </div>
+
+            {/* ===== API KEYS SECTION ===== */}
+            <div className="pt-3 border-t border-[#3a3a38]">
+              <button
+                onClick={() => {
+                  setShowApiKeys(true);
+                  loadApiKeys();
+                }}
+                className="w-full px-3 py-2.5 text-sm font-medium text-gray-300 bg-[#262624] hover:bg-[#1f1f1d] border border-[#3a3a38] rounded-xl transition-all flex items-center justify-center gap-2"
+              >
+                <Key className="w-4 h-4 text-[#D97757]" />
+                API Keys
+              </button>
+              <p className="text-[10px] text-gray-500 text-center mt-1.5">Manage AI service keys</p>
+            </div>
           </div>
 
           {/* Fixed Logout at Bottom (SINGLE BUTTON) */}
@@ -1934,26 +2018,26 @@ export default function DashboardPage() {
                       e.stopPropagation();
                       setShowCategoryDropdown(!showCategoryDropdown);
                     }}
-                    className="w-full px-4 py-2.5 bg-[#262624] border border-[#3a3a38] rounded-xl focus:ring-1 focus:ring-[#D97757] focus:border-[#D97757] outline-none transition-colors text-white text-left flex items-center justify-between"
+                    className="w-full px-4 py-3 bg-[#262624] border border-[#3a3a38] rounded-xl focus:ring-1 focus:ring-[#D97757] focus:border-[#D97757] outline-none transition-colors text-white text-left flex items-center justify-between hover:border-[#D97757]/50"
                   >
-                    <span className="flex items-center gap-2">
+                    <span className="flex items-center gap-2.5">
                       {credentialForm.categoryId ? (
                         <>
-                          <span 
+                          <span
                             className="w-3 h-3 rounded-full flex-shrink-0"
                             style={{ backgroundColor: categories.find(c => c.id === credentialForm.categoryId)?.color }}
                           />
-                          <span>{categories.find(c => c.id === credentialForm.categoryId)?.name}</span>
+                          <span className="text-sm">{categories.find(c => c.id === credentialForm.categoryId)?.name}</span>
                         </>
                       ) : (
-                        <span className="text-gray-500">None</span>
+                        <span className="text-gray-500 text-sm">Select category</span>
                       )}
                     </span>
-                    <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg className="w-5 h-5 text-[#D97757]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                     </svg>
                   </button>
-                  
+
                   {showCategoryDropdown && (
                     <div className="absolute z-10 w-full mt-2 bg-[#30302E] border border-[#3a3a38] rounded-xl shadow-2xl overflow-hidden max-h-60 overflow-y-auto custom-scrollbar">
                       <button
@@ -1962,7 +2046,7 @@ export default function DashboardPage() {
                           setCredentialForm({ ...credentialForm, categoryId: null });
                           setShowCategoryDropdown(false);
                         }}
-                        className="w-full px-4 py-2.5 text-left hover:bg-[#262624] transition-colors text-gray-400 border-b border-[#3a3a38]"
+                        className="w-full px-4 py-3 text-left hover:bg-[#262624] transition-colors text-gray-400 border-b border-[#3a3a38] text-sm"
                       >
                         None
                       </button>
@@ -1974,11 +2058,11 @@ export default function DashboardPage() {
                             setCredentialForm({ ...credentialForm, categoryId: cat.id });
                             setShowCategoryDropdown(false);
                           }}
-                          className={`w-full px-4 py-2.5 text-left hover:bg-[#262624] transition-colors flex items-center gap-2 ${
+                          className={`w-full px-4 py-3 text-left hover:bg-[#262624] transition-colors flex items-center gap-2.5 text-sm ${
                             credentialForm.categoryId === cat.id ? 'bg-[#262624]' : ''
                           }`}
                         >
-                          <span 
+                          <span
                             className="w-3 h-3 rounded-full flex-shrink-0"
                             style={{ backgroundColor: cat.color }}
                           />
@@ -2683,6 +2767,139 @@ export default function DashboardPage() {
                   resetSpacemailValidator();
                 }}
                 className="px-4 py-2 bg-[#262624] text-white rounded-lg font-medium text-sm hover:bg-[#1f1f1d] border border-[#3a3a38] transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== API KEYS MODAL ===== */}
+      {showApiKeys && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-[#30302E] rounded-2xl w-full max-w-md shadow-2xl border border-[#3a3a38]">
+            {/* Header */}
+            <div className="flex items-center justify-between p-4 border-b border-[#3a3a38]">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-[#D97757]/10 flex items-center justify-center">
+                  <Key className="w-5 h-5 text-[#D97757]" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-white">API Keys</h3>
+                  <p className="text-xs text-gray-500">Manage your AI service keys</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowApiKeys(false)}
+                className="p-1.5 hover:bg-[#262624] rounded-lg transition-colors text-gray-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto">
+              {/* Add New API Key Form */}
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1.5">Provider</label>
+                  <div className="relative">
+                    <select
+                      value={apiKeyProvider}
+                      onChange={(e) => setApiKeyProvider(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-[#262624] border border-[#3a3a38] rounded-xl focus:ring-1 focus:ring-[#D97757] focus:border-[#D97757] outline-none text-white appearance-none cursor-pointer pr-10"
+                      style={{ lineHeight: '1.5' }}
+                    >
+                      <option value="openai" style={{ padding: '12px 16px', backgroundColor: '#262624' }}>OpenAI (GPT-4, GPT-3.5)</option>
+                      <option value="anthropic" style={{ padding: '12px 16px', backgroundColor: '#262624' }} disabled>Anthropic Claude (Coming Soon)</option>
+                      <option value="google" style={{ padding: '12px 16px', backgroundColor: '#262624' }} disabled>Google Gemini (Coming Soon)</option>
+                      <option value="azure" style={{ padding: '12px 16px', backgroundColor: '#262624' }} disabled>Azure OpenAI (Coming Soon)</option>
+                    </select>
+                    <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
+                      <svg className="w-5 h-5 text-[#D97757]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1.5">API Key</label>
+                  <input
+                    type="password"
+                    value={apiKeyValue}
+                    onChange={(e) => setApiKeyValue(e.target.value)}
+                    placeholder="sk-..."
+                    className="w-full px-3 py-2.5 bg-[#262624] border border-[#3a3a38] rounded-xl focus:ring-1 focus:ring-[#D97757] focus:border-[#D97757] outline-none text-white placeholder-gray-600 font-mono"
+                  />
+                </div>
+
+                <button
+                  onClick={saveApiKey}
+                  disabled={isSavingApiKey || !apiKeyValue.trim()}
+                  className="w-full py-2.5 bg-[#D97757] text-white rounded-xl font-medium hover:bg-[#c26848] transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isSavingApiKey ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-4 h-4" />
+                      Save API Key
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Existing API Keys */}
+              {apiKeys.length > 0 && (
+                <div className="pt-4 border-t border-[#3a3a38]">
+                  <h4 className="text-sm font-medium text-gray-300 mb-3">Saved Keys</h4>
+                  <div className="space-y-2">
+                    {apiKeys.map((key) => (
+                      <div
+                        key={key.id}
+                        className="flex items-center justify-between p-3 bg-[#262624] rounded-xl border border-[#3a3a38]"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-lg bg-[#D97757]/10 flex items-center justify-center">
+                            <Key className="w-4 h-4 text-[#D97757]" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-white capitalize">{key.provider}</p>
+                            <p className="text-xs text-gray-500 font-mono">•••••••{key.api_key_masked?.slice(-3) || '•••'}</p>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => deleteApiKey(key.provider)}
+                          className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                          title="Delete API Key"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {apiKeys.length === 0 && (
+                <div className="text-center py-6">
+                  <Key className="w-10 h-10 text-gray-600 mx-auto mb-2" />
+                  <p className="text-sm text-gray-500">No API keys saved yet</p>
+                  <p className="text-xs text-gray-600 mt-1">Add your OpenAI key to use AI features</p>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-[#3a3a38]">
+              <button
+                onClick={() => setShowApiKeys(false)}
+                className="w-full py-2.5 bg-[#262624] text-gray-300 rounded-xl font-medium hover:bg-[#1f1f1d] border border-[#3a3a38] transition-colors"
               >
                 Close
               </button>

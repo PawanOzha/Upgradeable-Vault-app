@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   Eye, EyeOff, Plus, Edit2, Trash2, X, Search, User,
   Lock, FolderPlus, Copy, ExternalLink, CheckCircle, AlertCircle,
-  LogOut, Minus, StickyNote, Maximize2
+  LogOut, Minus, StickyNote, Maximize2, Mail, ShieldCheck, Sparkles
 } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { useEffect, useState, useRef } from 'react';
@@ -207,6 +207,17 @@ export default function DashboardPage() {
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ type: 'credential' | 'category' | 'note'; id: number; title: string } | null>(null);
+
+  // Spacemail Validator
+  const [showSpacemailValidator, setShowSpacemailValidator] = useState(false);
+  const [emailSubject, setEmailSubject] = useState('');
+  const [emailBody, setEmailBody] = useState('');
+  const [spamScore, setSpamScore] = useState<number | null>(null);
+  const [spamIssues, setSpamIssues] = useState<string[]>([]);
+  const [aiAnalysis, setAiAnalysis] = useState<any>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isReformatting, setIsReformatting] = useState(false);
+  const [reformattedEmail, setReformattedEmail] = useState<{ subject: string; body: string } | null>(null);
   const [editingCredential, setEditingCredential] = useState<Credential | null>(null);
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
 
@@ -788,6 +799,255 @@ export default function DashboardPage() {
     }
   };
 
+  // ========== SPACEMAIL VALIDATOR ==========
+  // Based on Spacemail.com Knowledge Base guidelines
+  const analyzeEmail = async () => {
+    setIsAnalyzing(true);
+    setAiAnalysis(null);
+    setSpamScore(null);
+    setSpamIssues([]);
+
+    try {
+      // Call OpenAI API via IPC
+      if (typeof window !== 'undefined' && window.ipcRenderer) {
+        const result = await window.ipcRenderer.invoke('openai:analyzeEmail', {
+          subject: emailSubject,
+          body: emailBody
+        });
+
+        if (result.success && result.analysis) {
+          setAiAnalysis(result.analysis);
+          setSpamScore(result.analysis.score);
+          setIsAnalyzing(false);
+          return;
+        } else {
+          console.error('AI analysis failed:', result.error);
+          addToast('AI analysis failed, using basic check', 'info');
+        }
+      }
+    } catch (error) {
+      console.error('Error calling OpenAI:', error);
+      addToast('AI unavailable, using basic check', 'info');
+    } finally {
+      setIsAnalyzing(false);
+    }
+
+    // Fallback to basic analysis if AI fails
+    const issues: string[] = [];
+    const suggestions: string[] = [];
+    let score = 100;
+
+    // ===== SUBJECT LINE CHECKS =====
+    if (!emailSubject.trim()) {
+      issues.push('Missing subject line');
+      suggestions.push('Add a clear, concise subject that reflects email purpose');
+      score -= 20;
+    } else {
+      // Subject ends with question mark
+      if (emailSubject.trim().endsWith('?')) {
+        issues.push('Subject ends with question mark');
+        suggestions.push('Remove question mark from end of subject');
+        score -= 10;
+      }
+      // Subject ends with space
+      if (emailSubject.trim() !== emailSubject) {
+        issues.push('Subject has leading/trailing spaces');
+        suggestions.push('Remove extra spaces from subject');
+        score -= 5;
+      }
+      // All uppercase subject
+      if (emailSubject === emailSubject.toUpperCase() && emailSubject.length > 3) {
+        issues.push('Subject is all uppercase');
+        suggestions.push('Use normal capitalization in subject');
+        score -= 15;
+      }
+      // Test/Testing in subject
+      if (/\b(test|testing)\b/i.test(emailSubject)) {
+        issues.push('Subject contains "Test/Testing"');
+        suggestions.push('Remove test words - looks unprofessional');
+        score -= 15;
+      }
+      // Misleading/clickbait subject
+      const clickbaitWords = ['you won', 'congratulations', 'selected', 'winner', 'claim now'];
+      if (clickbaitWords.some(word => emailSubject.toLowerCase().includes(word))) {
+        issues.push('Subject appears clickbait-style');
+        suggestions.push('Use honest, straightforward subject lines');
+        score -= 15;
+      }
+    }
+
+    // ===== EMAIL BODY CHECKS =====
+    if (!emailBody.trim()) {
+      issues.push('Empty email body');
+      suggestions.push('Add structured content with clear message');
+      score -= 30;
+    } else {
+      const bodyLower = emailBody.toLowerCase();
+
+      // Spam trigger words (Spacemail specific)
+      const spamWords = [
+        'buy now', 'click here', 'lowest price', 'act now', 'limited time',
+        'exclusive deal', 'no obligation', 'risk free', 'order now',
+        'click below', 'special offer', 'save big', 'lowest prices'
+      ];
+
+      const foundSpamWords = spamWords.filter(word => bodyLower.includes(word));
+      if (foundSpamWords.length > 0) {
+        issues.push(`Spam trigger words: ${foundSpamWords.slice(0, 3).join(', ')}${foundSpamWords.length > 3 ? '...' : ''}`);
+        suggestions.push('Replace spam words with professional alternatives');
+        score -= Math.min(foundSpamWords.length * 5, 25);
+      }
+
+      // Excessive exclamation marks
+      const exclamationCount = (emailBody.match(/!/g) || []).length;
+      if (exclamationCount > 3) {
+        issues.push(`Too many exclamation marks (${exclamationCount})`);
+        suggestions.push('Limit exclamation marks to 1-2 max');
+        score -= 10;
+      }
+
+      // All caps words (flashy text)
+      const capsWords = emailBody.match(/\b[A-Z]{4,}\b/g) || [];
+      if (capsWords.length > 2) {
+        issues.push(`Too many ALL CAPS words (${capsWords.length})`);
+        suggestions.push('Avoid flashy formatting - use normal text');
+        score -= 10;
+      }
+
+      // Shortened URLs (Spacemail specific - spammers hide real URLs)
+      const shortUrlPatterns = /\b(bit\.ly|tinyurl|tiny\.cc|goo\.gl|t\.co|ow\.ly|is\.gd|buff\.ly)\b/i;
+      if (shortUrlPatterns.test(emailBody)) {
+        issues.push('Contains shortened URLs');
+        suggestions.push('Use full URLs - shortened links look suspicious');
+        score -= 20;
+      }
+
+      // Too many special characters at boundaries
+      if (/^[!@#$%^&*()]+|[!@#$%^&*()]+$/gm.test(emailBody)) {
+        issues.push('Special symbols at sentence start/end');
+        suggestions.push('Remove excessive special characters');
+        score -= 5;
+      }
+
+      // Check for professional signature
+      const hasSignature = /regards|sincerely|best|thanks|cheers|respectfully/i.test(emailBody);
+      const hasContactInfo = /phone|tel|email|contact|address|\d{3}[-.\s]?\d{3}[-.\s]?\d{4}/i.test(emailBody);
+
+      if (!hasSignature && emailBody.length > 100) {
+        issues.push('Missing professional signature');
+        suggestions.push('Add signature with name, title, and contact info');
+        score -= 10;
+      }
+
+      if (!hasContactInfo && emailBody.length > 150) {
+        issues.push('No contact information found');
+        suggestions.push('Include phone/email in signature for credibility');
+        score -= 5;
+      }
+
+      // Check for structure (headings, bullets, paragraphs)
+      const hasParagraphs = emailBody.includes('\n\n') || emailBody.split('\n').length > 3;
+      if (!hasParagraphs && emailBody.length > 200) {
+        issues.push('Email lacks proper structure');
+        suggestions.push('Use paragraphs, headings, or bullet points');
+        score -= 5;
+      }
+
+      // Very short body (looks like spam)
+      if (emailBody.trim().length < 50) {
+        issues.push('Email body too short');
+        suggestions.push('Add more context - very short emails look suspicious');
+        score -= 10;
+      }
+
+      // Image-only check (if mentions image but little text)
+      if (/\[image\]|\.(jpg|png|gif)/i.test(emailBody) && emailBody.replace(/\[.*?\]/g, '').trim().length < 100) {
+        issues.push('Too image-heavy, not enough text');
+        suggestions.push('Add at least 2 lines of text per image');
+        score -= 10;
+      }
+
+      // Check for suspicious attachments mention
+      const badAttachments = /\.(exe|zip|swf|bat|cmd|msi|scr)\b/i;
+      if (badAttachments.test(emailBody)) {
+        issues.push('Mentions suspicious attachment types');
+        suggestions.push('Use safe formats: .pdf, .jpg, .png, .gif');
+        score -= 15;
+      }
+
+      // Check for unsubscribe (required for marketing emails)
+      const hasUnsubscribe = /unsubscribe|opt.out|remove.*list/i.test(emailBody);
+      const isMarketingEmail = /offer|discount|sale|promo|deal|newsletter/i.test(emailBody);
+      if (isMarketingEmail && !hasUnsubscribe) {
+        issues.push('Marketing email missing unsubscribe option');
+        suggestions.push('Add unsubscribe link for compliance');
+        score -= 10;
+      }
+    }
+
+    // Ensure score doesn't go below 0
+    score = Math.max(0, score);
+
+    setSpamScore(score);
+    setSpamIssues(issues.map((issue, i) => suggestions[i] ? `${issue} → ${suggestions[i]}` : issue));
+    setIsAnalyzing(false);
+  };
+
+  const resetSpacemailValidator = () => {
+    setEmailSubject('');
+    setEmailBody('');
+    setSpamScore(null);
+    setSpamIssues([]);
+    setAiAnalysis(null);
+    setIsAnalyzing(false);
+    setReformattedEmail(null);
+  };
+
+  // Reformat email using AI according to Spacemail requirements
+  const reformatEmail = async () => {
+    if (!emailSubject.trim() && !emailBody.trim()) {
+      addToast('Please enter email subject or body to reformat', 'info');
+      return;
+    }
+
+    setIsReformatting(true);
+    setReformattedEmail(null);
+
+    try {
+      if (typeof window !== 'undefined' && window.ipcRenderer) {
+        const result = await window.ipcRenderer.invoke('openai:reformatEmail', {
+          subject: emailSubject,
+          body: emailBody
+        });
+
+        if (result.success && result.reformatted) {
+          setReformattedEmail(result.reformatted);
+          addToast('Email reformatted successfully!', 'success');
+        } else {
+          console.error('Reformat failed:', result.error);
+          addToast('Failed to reformat email', 'error');
+        }
+      }
+    } catch (error) {
+      console.error('Error reformatting email:', error);
+      addToast('Failed to reformat email', 'error');
+    } finally {
+      setIsReformatting(false);
+    }
+  };
+
+  // Apply reformatted email to input fields
+  const applyReformattedEmail = () => {
+    if (reformattedEmail) {
+      setEmailSubject(reformattedEmail.subject);
+      setEmailBody(reformattedEmail.body);
+      setReformattedEmail(null);
+      setAiAnalysis(null);
+      setSpamScore(null);
+      addToast('Reformatted email applied!', 'success');
+    }
+  };
+
   // ========== FORM HELPERS ==========
   const openEditModal = (credential: Credential) => {
     setEditingCredential(credential);
@@ -1246,6 +1506,18 @@ export default function DashboardPage() {
                   </>
                 )}
               </div>
+            </div>
+
+            {/* ===== SPACEMAIL VALIDATOR SECTION ===== */}
+            <div className="pt-3 border-t border-[#3a3a38]">
+              <button
+                onClick={() => setShowSpacemailValidator(true)}
+                className="w-full px-3 py-2.5 text-sm font-medium text-white bg-[#D97757] hover:bg-[#c26848] rounded-xl transition-all flex items-center justify-center gap-2"
+              >
+                <Mail className="w-4 h-4" />
+                Spacemail Validator
+              </button>
+              <p className="text-[10px] text-gray-500 text-center mt-1.5">Check email for spam triggers</p>
             </div>
           </div>
 
@@ -2020,14 +2292,35 @@ export default function DashboardPage() {
               <p className="text-sm text-gray-400">Enter your password to decrypt your vault</p>
             </div>
 
-            <form onSubmit={(e) => {
+            <form onSubmit={async (e) => {
               e.preventDefault();
               if (!masterPassword) {
                 addToast('Please enter your master password', 'error');
                 return;
               }
-              sessionStorage.setItem('mp', masterPassword);
-              loadData();
+
+              // Verify master password before proceeding
+              try {
+                setLoading(true);
+                if (typeof window !== 'undefined' && window.ipcRenderer) {
+                  const result = await window.ipcRenderer.invoke('auth:verifyMasterPassword', { masterPassword });
+                  if (!result.success) {
+                    setError(result.error || 'Invalid master password');
+                    addToast('Invalid master password', 'error');
+                    setMasterPassword('');
+                    setLoading(false);
+                    return;
+                  }
+                }
+
+                sessionStorage.setItem('mp', masterPassword);
+                loadData();
+              } catch (error: any) {
+                setError(error.message || 'Failed to verify password');
+                addToast('Failed to verify password', 'error');
+                setMasterPassword('');
+                setLoading(false);
+              }
             }} className="p-6 space-y-4">
               <div>
                 <label className="block text-sm font-semibold text-gray-300 mb-2">Password</label>
@@ -2055,10 +2348,17 @@ export default function DashboardPage() {
 
               <button
                 type="submit"
-                disabled={!masterPassword}
-                className="w-full px-4 py-2.5 bg-[#D97757] text-white rounded-xl hover:bg-[#c26848] transition-colors font-medium text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={!masterPassword || loading}
+                className="w-full px-4 py-2.5 bg-[#D97757] text-white rounded-xl hover:bg-[#c26848] transition-colors font-medium text-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
-                Unlock Vault
+                {loading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    Verifying...
+                  </>
+                ) : (
+                  'Unlock Vault'
+                )}
               </button>
             </form>
           </div>
@@ -2083,6 +2383,313 @@ export default function DashboardPage() {
           setDeleteTarget(null);
         }}
       />
+
+      {/* ===== SPACEMAIL VALIDATOR MODAL ===== */}
+      {showSpacemailValidator && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-[#30302E] rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden shadow-2xl border border-[#3a3a38] animate-in zoom-in-95 duration-200 flex flex-col">
+            {/* Header */}
+            <div className="p-6 border-b border-[#3a3a38] flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-[#D97757] rounded-lg">
+                  <Mail className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-white">Spacemail Validator</h2>
+                  <p className="text-xs text-gray-500">Check your email for spam triggers</p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowSpacemailValidator(false);
+                  resetSpacemailValidator();
+                }}
+                className="p-2 hover:bg-[#262624] rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5 text-gray-400" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-6 overflow-y-auto flex-1 custom-scrollbar">
+              <div className="space-y-4">
+                {/* Subject Line */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Email Subject
+                  </label>
+                  <input
+                    type="text"
+                    value={emailSubject}
+                    onChange={(e) => setEmailSubject(e.target.value)}
+                    placeholder="Enter your email subject line..."
+                    className="w-full px-4 py-3 bg-[#262624] border border-[#3a3a38] rounded-xl focus:ring-1 focus:ring-[#D97757] focus:border-[#D97757] outline-none text-white placeholder-gray-600"
+                  />
+                </div>
+
+                {/* Email Body */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Email Body
+                  </label>
+                  <textarea
+                    value={emailBody}
+                    onChange={(e) => setEmailBody(e.target.value)}
+                    placeholder="Paste your email content here..."
+                    rows={8}
+                    className="w-full px-4 py-3 bg-[#262624] border border-[#3a3a38] rounded-xl focus:ring-1 focus:ring-[#D97757] focus:border-[#D97757] outline-none text-white placeholder-gray-600 resize-none"
+                  />
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex gap-3">
+                  <button
+                    onClick={analyzeEmail}
+                    disabled={isAnalyzing || isReformatting}
+                    className="flex-1 py-3 bg-[#D97757] text-white rounded-xl font-medium hover:bg-[#c26848] transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isAnalyzing ? (
+                      <>
+                        <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        Analyzing...
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck className="w-5 h-5" />
+                        Analyze
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={reformatEmail}
+                    disabled={isAnalyzing || isReformatting}
+                    className="flex-1 py-3 bg-[#3a3a38] text-white rounded-xl font-medium hover:bg-[#4a4a48] transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed border border-[#D97757]"
+                  >
+                    {isReformatting ? (
+                      <>
+                        <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        Reformatting...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-5 h-5 text-[#D97757]" />
+                        Reformat with AI
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {/* Reformatted Email Result */}
+                {reformattedEmail && (
+                  <div className="mt-4 p-4 bg-[#262624] rounded-xl border border-[#D97757]/50">
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="text-sm font-medium text-[#D97757] flex items-center gap-2">
+                        <Sparkles className="w-4 h-4" />
+                        AI Reformatted Email
+                      </h4>
+                      <button
+                        onClick={applyReformattedEmail}
+                        className="px-3 py-1 bg-[#D97757] text-white text-xs rounded-lg hover:bg-[#c26848] transition-all"
+                      >
+                        Apply
+                      </button>
+                    </div>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-xs text-gray-500 mb-1 block">Subject:</label>
+                        <p className="text-sm text-white bg-[#1a1a19] p-2 rounded-lg">{reformattedEmail.subject}</p>
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-500 mb-1 block">Body:</label>
+                        <pre className="text-sm text-white bg-[#1a1a19] p-2 rounded-lg whitespace-pre-wrap font-sans max-h-48 overflow-y-auto">{reformattedEmail.body}</pre>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* AI Analysis Results */}
+                {aiAnalysis && (
+                  <div className="mt-6 space-y-4">
+                    {/* Score Display */}
+                    <div className={`p-4 rounded-xl border ${
+                      aiAnalysis.score >= 80 ? 'bg-emerald-500/10 border-emerald-500/30' :
+                      aiAnalysis.score >= 50 ? 'bg-yellow-500/10 border-yellow-500/30' :
+                      'bg-red-500/10 border-red-500/30'
+                    }`}>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-medium text-gray-300">AI Spam Score</span>
+                        <span className={`text-2xl font-bold ${
+                          aiAnalysis.score >= 80 ? 'text-emerald-400' :
+                          aiAnalysis.score >= 50 ? 'text-yellow-400' :
+                          'text-red-400'
+                        }`}>
+                          {aiAnalysis.score}/100
+                        </span>
+                      </div>
+                      <div className="w-full bg-[#262624] rounded-full h-2">
+                        <div
+                          className={`h-2 rounded-full transition-all ${
+                            aiAnalysis.score >= 80 ? 'bg-emerald-500' :
+                            aiAnalysis.score >= 50 ? 'bg-yellow-500' :
+                            'bg-red-500'
+                          }`}
+                          style={{ width: `${aiAnalysis.score}%` }}
+                        />
+                      </div>
+                      {aiAnalysis.summary && (
+                        <p className="text-sm text-gray-400 mt-3">{aiAnalysis.summary}</p>
+                      )}
+                    </div>
+
+                    {/* AI Issues List */}
+                    {aiAnalysis.issues && aiAnalysis.issues.length > 0 && (
+                      <div className="space-y-2">
+                        <h4 className="text-sm font-medium text-gray-300">Issues Found:</h4>
+                        <div className="space-y-2">
+                          {aiAnalysis.issues.map((item: any, index: number) => (
+                            <div
+                              key={index}
+                              className={`p-3 rounded-lg border ${
+                                item.severity === 'high' ? 'bg-red-500/10 border-red-500/30' :
+                                item.severity === 'medium' ? 'bg-yellow-500/10 border-yellow-500/30' :
+                                'bg-blue-500/10 border-blue-500/30'
+                              }`}
+                            >
+                              <div className="flex items-start gap-2">
+                                <AlertCircle className={`w-4 h-4 flex-shrink-0 mt-0.5 ${
+                                  item.severity === 'high' ? 'text-red-400' :
+                                  item.severity === 'medium' ? 'text-yellow-400' :
+                                  'text-blue-400'
+                                }`} />
+                                <div>
+                                  <p className="text-sm text-white font-medium">{item.issue}</p>
+                                  {item.suggestion && (
+                                    <p className="text-xs text-gray-400 mt-1">→ {item.suggestion}</p>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* AI Improvements */}
+                    {aiAnalysis.improvements && aiAnalysis.improvements.length > 0 && (
+                      <div className="space-y-2">
+                        <h4 className="text-sm font-medium text-gray-300">Suggested Improvements:</h4>
+                        <div className="p-3 bg-[#262624] rounded-lg border border-[#3a3a38]">
+                          <ul className="space-y-1">
+                            {aiAnalysis.improvements.map((improvement: string, index: number) => (
+                              <li key={index} className="text-sm text-gray-300 flex items-start gap-2">
+                                <span className="text-[#D97757]">•</span>
+                                {improvement}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+
+                    {aiAnalysis.issues?.length === 0 && (
+                      <div className="flex items-center gap-2 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg">
+                        <CheckCircle className="w-4 h-4 text-emerald-400" />
+                        <span className="text-sm text-emerald-400">No issues found! Your email looks good.</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Fallback Basic Results (when AI fails) */}
+                {!aiAnalysis && spamScore !== null && (
+                  <div className="mt-6 space-y-4">
+                    {/* Score Display */}
+                    <div className={`p-4 rounded-xl border ${
+                      spamScore >= 80 ? 'bg-emerald-500/10 border-emerald-500/30' :
+                      spamScore >= 50 ? 'bg-yellow-500/10 border-yellow-500/30' :
+                      'bg-red-500/10 border-red-500/30'
+                    }`}>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-medium text-gray-300">Basic Spam Score</span>
+                        <span className={`text-2xl font-bold ${
+                          spamScore >= 80 ? 'text-emerald-400' :
+                          spamScore >= 50 ? 'text-yellow-400' :
+                          'text-red-400'
+                        }`}>
+                          {spamScore}/100
+                        </span>
+                      </div>
+                      <div className="w-full bg-[#262624] rounded-full h-2">
+                        <div
+                          className={`h-2 rounded-full transition-all ${
+                            spamScore >= 80 ? 'bg-emerald-500' :
+                            spamScore >= 50 ? 'bg-yellow-500' :
+                            'bg-red-500'
+                          }`}
+                          style={{ width: `${spamScore}%` }}
+                        />
+                      </div>
+                      <p className={`text-xs mt-2 ${
+                        spamScore >= 80 ? 'text-emerald-400' :
+                        spamScore >= 50 ? 'text-yellow-400' :
+                        'text-red-400'
+                      }`}>
+                        {spamScore >= 80 ? 'Good! Low spam risk' :
+                         spamScore >= 50 ? 'Moderate spam risk - review issues' :
+                         'High spam risk - needs improvement'}
+                      </p>
+                    </div>
+
+                    {/* Issues List */}
+                    {spamIssues.length > 0 && (
+                      <div className="space-y-2">
+                        <h4 className="text-sm font-medium text-gray-300">Issues Found:</h4>
+                        <div className="space-y-2">
+                          {spamIssues.map((issue, index) => (
+                            <div
+                              key={index}
+                              className="flex items-start gap-2 p-3 bg-[#262624] rounded-lg border border-[#3a3a38]"
+                            >
+                              <AlertCircle className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" />
+                              <span className="text-sm text-gray-300">{issue}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {spamIssues.length === 0 && (
+                      <div className="flex items-center gap-2 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg">
+                        <CheckCircle className="w-4 h-4 text-emerald-400" />
+                        <span className="text-sm text-emerald-400">No issues found! Your email looks good.</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-[#3a3a38] flex justify-end gap-3">
+              <button
+                onClick={resetSpacemailValidator}
+                className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white transition-colors"
+              >
+                Clear
+              </button>
+              <button
+                onClick={() => {
+                  setShowSpacemailValidator(false);
+                  resetSpacemailValidator();
+                }}
+                className="px-4 py-2 bg-[#262624] text-white rounded-lg font-medium text-sm hover:bg-[#1f1f1d] border border-[#3a3a38] transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ===== CATEGORY CONTEXT MENU ===== */}
       {categoryContextMenu.visible && (

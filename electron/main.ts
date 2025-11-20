@@ -4,6 +4,10 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'fs';
+import { config } from 'dotenv';
+
+// Load environment variables from .env file
+config();
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import Store from 'electron-store';
@@ -1032,7 +1036,7 @@ function getDeviceFingerprint(): string {
 ipcMain.handle('auth:signup', async (event, { username, password }) => {
   try {
     const db = getDb();
-    
+
     // Check if user exists
     const existingUser = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
     if (existingUser) {
@@ -1043,10 +1047,16 @@ ipcMain.handle('auth:signup', async (event, { username, password }) => {
     const salt = generateSalt();
     const hashedPassword = hashPassword(password, salt);
 
-    // Insert user
+    // Generate master password verification token
+    // This token is encrypted with the master password and stored
+    // When unlocking vault, we decrypt it to verify the password
+    const encryptionKey = deriveEncryptionKey(password, salt);
+    const verifyToken = encryptPassword('VAULT_VERIFY_TOKEN_' + Date.now(), encryptionKey);
+
+    // Insert user with verification token
     const result = db.prepare(
-      'INSERT INTO users (username, password_hash, salt) VALUES (?, ?, ?)'
-    ).run(username, hashedPassword, salt);
+      'INSERT INTO users (username, password_hash, salt, master_verify_token) VALUES (?, ?, ?, ?)'
+    ).run(username, hashedPassword, salt, verifyToken);
 
     return {
       success: true,
@@ -1220,6 +1230,48 @@ ipcMain.handle('auth:logout', async (event) => {
   store.delete('user');
   console.log('User logged out and session cleared');
   return { success: true };
+});
+
+// Verify master password (for vault unlock)
+ipcMain.handle('auth:verifyMasterPassword', async (event, { masterPassword }) => {
+  try {
+    if (!activeSession) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    const db = getDb();
+    const user: any = db.prepare('SELECT password_hash, salt, master_verify_token FROM users WHERE id = ?').get(activeSession.userId);
+
+    if (!user) {
+      return { success: false, error: 'User not found' };
+    }
+
+    // First, verify using the password hash (this is the primary verification)
+    // Since master password IS the login password, we can use the stored hash
+    const isValidPassword = verifyPassword(masterPassword, user.salt, user.password_hash);
+    if (!isValidPassword) {
+      console.log('[Auth] Master password verification failed - hash mismatch');
+      return { success: false, error: 'Invalid master password' };
+    }
+
+    // If no verification token exists (legacy user), generate one now
+    if (!user.master_verify_token) {
+      try {
+        const encryptionKey = deriveEncryptionKey(masterPassword, activeSession.salt);
+        const verifyToken = encryptPassword('VAULT_VERIFY_TOKEN_' + Date.now(), encryptionKey);
+        db.prepare('UPDATE users SET master_verify_token = ? WHERE id = ?').run(verifyToken, activeSession.userId);
+        console.log('[Auth] Generated verification token for legacy user');
+      } catch (error) {
+        console.error('[Auth] Failed to generate verification token:', error);
+        // Continue anyway since password hash was verified
+      }
+    }
+
+    return { success: true };
+  } catch (error: any) {
+    console.error('[Auth] Verification error:', error);
+    return { success: false, error: error.message || 'Verification failed' };
+  }
 });
 
 // ============================================================================
@@ -1774,6 +1826,287 @@ ipcMain.handle('backup:restore', async (event, { backupName }) => {
 
 ipcMain.handle('backup:getPath', async () => {
   return { success: true, path: getBackupDir() };
+});
+
+// ============================================================================
+// OPENAI SPACEMAIL VALIDATOR
+// ============================================================================
+
+ipcMain.handle('openai:analyzeEmail', async (event, { subject, body }) => {
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+
+    if (!apiKey) {
+      return { success: false, error: 'OpenAI API key not configured' };
+    }
+
+    // Spacemail.com Knowledge Base
+    const knowledgeBase = `
+SPACEMAIL.COM EMAIL DELIVERABILITY KNOWLEDGE BASE
+
+WHY EMAILS GO TO SPAM:
+
+1. WHERE THE MESSAGE CAME FROM
+Anti-spam organizations have created special network lists called RBLs (Real-time blackhole lists). Spam filter checks such lists for the IP address and the domain name that the message was sent from. If the IP address matches one on the list, the spam score of the message increases.
+
+2. WHO SENT THE MESSAGE
+Using email headers spam filters check if the email was sent by a spam engine or by a real sender. Every email has a unique ID, but when the spammers send mass emails, they all have the same ID.
+
+3. WHAT THE MESSAGE LOOKS LIKE
+The spam filter analyzes the body and the subject of the email. Strings which can be identified as spam are 'buy now', 'lowest prices', 'click here', etc. Also, it looks for flashy HTML such as large fonts, blinking text, bright colors, and so on. A lot of spam filters compare the whole text to the number of suspicious words.
+
+GUIDELINES TO IMPROVE EMAIL DELIVERY:
+
+VALID SENDER INFORMATION:
+- Use a recognizable and legitimate sender email address
+- Avoid generic or suspicious sender names
+- Ensure the "From" field accurately represents your organization or brand
+
+CLEAR SUBJECT LINE:
+- Write a subject line that reflects the email's purpose concisely
+- Avoid misleading or clickbait-style subject lines
+- Do not end a subject with a question mark or space
+- Do not use only uppercase letters
+- Do not use words like Test/Testing in the subject
+
+STRUCTURED EMAIL BODY:
+- Organize your email content into paragraphs or sections
+- Use headings, bullet points, and numbered lists to improve readability
+- Do not use too many special symbols, especially at the beginning or at the end of the sentence
+
+SIGNATURE AND CONTACT INFORMATION:
+- Include a professional email signature with your name, job title, and contact details
+- A well-formatted signature adds credibility to your email
+
+AVOID EXCESSIVE LINKS AND ATTACHMENTS:
+- Limit the number of hyperlinks in your email
+- Avoid overloading the email with files
+- Be careful with images - have no less than two strings of text per image
+- Do not use shortened URLs (bit.ly, tinyurl.com, etc.) - spammers use those to hide real URLs
+- Avoid attachments like .exe, .zip, .swf. It is okay to use .jpg, .gif, .png and .pdf
+
+UNSUBSCRIBE OPTION:
+- The email should be identified as an ad if that is what you are sending
+- Include an easy-to-find unsubscribe link for compliance with anti-spam regulations
+
+PLAIN TEXT VERSION:
+- Some email clients may not render HTML properly
+- Including a plain text version ensures accessibility
+- Avoid different colors of fonts if possible
+
+DOMAIN CONFIGURATION:
+- Check SPF and DKIM records for email authentication
+- Check your IP and domain in blacklists before sending
+- Warm up newly registered domains for better deliverability
+
+OTHER RECOMMENDATIONS:
+- Do not purchase email lists - addresses are often incorrect and lead to blacklisting
+- Send individual emails to real people
+- Test emails by sending to different providers (Google, Yahoo, etc.)
+
+HOW TO IDENTIFY SPAM:
+- Spammers use long email addresses with random letters/numbers
+- Watch for impersonation of reputable organizations (fake domains like @paypai.com)
+- Look for typos, incorrect spelling, obvious grammatical mistakes
+- Be cautious of shortened URLs that may hide malicious links
+- Beware of unrealistic claims, ridiculously low prices, or money rewards
+`;
+
+    const prompt = `You are an email deliverability expert for Spacemail.com. Use the following knowledge base to analyze emails:
+
+${knowledgeBase}
+
+EMAIL TO ANALYZE:
+
+SUBJECT: ${subject || '(empty)'}
+
+BODY:
+${body || '(empty)'}
+
+Based on the Spacemail.com knowledge base above, thoroughly analyze this email and identify all potential spam triggers, deliverability issues, and areas for improvement.
+
+Respond in this exact JSON format:
+{
+  "score": <number 0-100, where 100 is perfect deliverability>,
+  "summary": "<one sentence overall assessment>",
+  "issues": [
+    {
+      "severity": "high|medium|low",
+      "issue": "<specific problem found>",
+      "suggestion": "<actionable fix based on knowledge base>"
+    }
+  ],
+  "improvements": ["<specific text changes or additions to make>"]
+}`;
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an email deliverability expert. Always respond with valid JSON only, no markdown formatting.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.3,
+        max_tokens: 1500
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error('[OpenAI] API error:', errorData);
+      return { success: false, error: `API error: ${response.status}` };
+    }
+
+    const data = await response.json();
+    const content = data.choices[0]?.message?.content;
+
+    if (!content) {
+      return { success: false, error: 'No response from OpenAI' };
+    }
+
+    // Parse JSON response
+    try {
+      const analysis = JSON.parse(content);
+      return { success: true, analysis };
+    } catch (parseError) {
+      console.error('[OpenAI] Failed to parse response:', content);
+      return { success: false, error: 'Failed to parse AI response' };
+    }
+  } catch (error: any) {
+    console.error('[OpenAI] Error:', error);
+    return { success: false, error: error.message || 'Failed to analyze email' };
+  }
+});
+
+// Reformat email according to Spacemail requirements
+ipcMain.handle('openai:reformatEmail', async (event, { subject, body }) => {
+  try {
+    const apiKey = process.env.OPENAI_API_KEY;
+
+    if (!apiKey) {
+      return { success: false, error: 'OpenAI API key not configured' };
+    }
+
+    // Spacemail.com Knowledge Base for reformatting
+    const knowledgeBase = `
+SPACEMAIL.COM EMAIL FORMATTING REQUIREMENTS:
+
+SUBJECT LINE RULES:
+- Must be clear, concise, and reflect email purpose
+- NO question marks at the end
+- NO trailing spaces
+- NO all uppercase letters
+- NO words like "Test" or "Testing"
+- NO clickbait or misleading phrases
+- NO spam trigger words (FREE, URGENT, ACT NOW, etc.)
+
+BODY FORMATTING RULES:
+- Organize into clear paragraphs or sections
+- Use bullet points or numbered lists for readability
+- NO excessive special symbols at sentence start/end
+- NO all caps text blocks
+- NO multiple exclamation marks in a row
+- Maintain professional tone
+
+REQUIRED ELEMENTS:
+- Professional greeting
+- Well-structured content with clear paragraphs
+- Professional signature with name and title
+- Contact information (email/phone)
+
+LINKS AND ATTACHMENTS:
+- Use full URLs, never shortened links (no bit.ly, tinyurl, etc.)
+- Mention safe attachment types only (.pdf, .jpg, .png, .gif)
+- Avoid mentioning .exe, .zip, .swf files
+
+FOR MARKETING EMAILS:
+- Include clear unsubscribe option
+- Identify as promotional content if applicable
+`;
+
+    const prompt = `You are an email formatting expert for Spacemail.com. Reformat the following email to meet all Spacemail requirements:
+
+${knowledgeBase}
+
+ORIGINAL EMAIL:
+
+Subject: ${subject || '(empty)'}
+
+Body:
+${body || '(empty)'}
+
+TASK: Rewrite this email to fully comply with Spacemail.com requirements. Keep the original intent and message but:
+1. Fix all subject line issues
+2. Improve body structure and formatting
+3. Add any missing required elements (signature, contact info if missing)
+4. Remove all spam triggers
+5. Make it professional and deliverable
+
+Respond in this exact JSON format:
+{
+  "subject": "<reformatted subject line>",
+  "body": "<reformatted email body with proper formatting>"
+}`;
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an email formatting expert. Always respond with valid JSON only, no markdown formatting. Preserve the original message intent while making it compliant with email deliverability best practices.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.4,
+        max_tokens: 2000
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error('[OpenAI] API error:', errorData);
+      return { success: false, error: `API error: ${response.status}` };
+    }
+
+    const data = await response.json();
+    const content = data.choices[0]?.message?.content;
+
+    if (!content) {
+      return { success: false, error: 'No response from OpenAI' };
+    }
+
+    // Parse JSON response
+    try {
+      const reformatted = JSON.parse(content);
+      return { success: true, reformatted };
+    } catch (parseError) {
+      console.error('[OpenAI] Failed to parse response:', content);
+      return { success: false, error: 'Failed to parse AI response' };
+    }
+  } catch (error: any) {
+    console.error('[OpenAI] Error:', error);
+    return { success: false, error: error.message || 'Failed to reformat email' };
+  }
 });
 
 // ============================================================================

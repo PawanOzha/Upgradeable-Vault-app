@@ -30,9 +30,22 @@ export function initDb() {
           username TEXT UNIQUE NOT NULL,
           password_hash TEXT NOT NULL,
           salt TEXT NOT NULL,
+          master_verify_token TEXT,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
       `);
+
+      // Migration: Add master_verify_token column if it doesn't exist
+      try {
+        const tableInfo = db.pragma('table_info(users)') as any[];
+        const hasVerifyToken = tableInfo.some((col: any) => col.name === 'master_verify_token');
+        if (!hasVerifyToken) {
+          db.exec('ALTER TABLE users ADD COLUMN master_verify_token TEXT');
+          console.log('[DB] Added master_verify_token column to users table');
+        }
+      } catch (e) {
+        // Column might already exist
+      }
 
       // Create categories table
       db.exec(`

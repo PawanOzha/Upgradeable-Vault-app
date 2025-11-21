@@ -313,7 +313,7 @@ function initWebSocketServer() {
             if (!checkWsRateLimit(ws, 'credentials')) {
               return;
             }
-            
+
             console.log('[WebSocket] 📨 Credential request for:', message.url);
             await handleCredentialRequest(ws, message.url);
             return;
@@ -443,11 +443,229 @@ async function handleCredentialRequest(ws: WebSocket, requestUrl: string) {
     console.log('[WebSocket] ✅ Encrypted credentials sent to extension');
   } catch (error) {
     console.error('[WebSocket] Error handling credential request:', error);
-    ws.send(JSON.stringify({ 
+    ws.send(JSON.stringify({
       type: 'credentials-response',
       success: false,
       error: 'Internal error'
     }));
+  }
+}
+
+// ============================================================================
+// PASSWORD SYNC - Poll Connector API for pending password changes
+// ============================================================================
+
+// Configuration for Connector API polling
+const CONNECTOR_API_NGROK_URL = 'https://nonfermenting-kamdyn-expressable.ngrok-free.dev';
+const VAULT_API_KEY = 'vault-secure-key-2024';
+let syncPollingInterval: NodeJS.Timeout | null = null;
+const SYNC_POLL_INTERVAL = 30000; // Poll every 30 seconds
+
+// Get all emails from user's credentials for polling (DECRYPTED)
+function getAllUserEmails(): string[] {
+  if (!activeSession || !activeSession.masterPassword) return [];
+
+  try {
+    const db = getDb();
+    const credentials = db.prepare(`
+      SELECT DISTINCT username FROM credentials WHERE user_id = ?
+    `).all(activeSession.userId) as any[];
+
+    // Decrypt usernames before sending to API
+    const encryptionKey = deriveEncryptionKey(activeSession.masterPassword, activeSession.salt);
+
+    const decryptedEmails: string[] = [];
+    for (const cred of credentials) {
+      if (cred.username) {
+        try {
+          const decrypted = decryptPassword(cred.username, encryptionKey);
+          if (decrypted) {
+            decryptedEmails.push(decrypted);
+          }
+        } catch (e) {
+          // Skip if decryption fails
+          console.error('[PasswordSync] Failed to decrypt username:', e);
+        }
+      }
+    }
+
+    return decryptedEmails.filter(Boolean);
+  } catch (error) {
+    console.error('[PasswordSync] Error getting emails:', error);
+    return [];
+  }
+}
+
+// Poll Connector API for pending password changes
+async function pollForPendingPasswordChanges() {
+  if (!activeSession || !activeSession.masterPassword) {
+    console.log('[PasswordSync] Skipping poll - not logged in or vault locked');
+    return;
+  }
+
+  const emails = getAllUserEmails();
+  if (emails.length === 0) {
+    console.log('[PasswordSync] No emails in vault to check');
+    return;
+  }
+
+  try {
+    console.log(`[PasswordSync] Polling API for ${emails.length} emails:`, emails);
+
+    // Call Connector API to check for pending changes
+    const response = await fetch(`${CONNECTOR_API_NGROK_URL}/api/vault/check-pending`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Vault-Key': VAULT_API_KEY,
+        'ngrok-skip-browser-warning': 'true'
+      },
+      body: JSON.stringify({ emails })
+    });
+
+    console.log(`[PasswordSync] API response status: ${response.status}`);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[PasswordSync] API error: ${response.status} - ${errorText}`);
+      return;
+    }
+
+    const data = await response.json();
+    console.log(`[PasswordSync] API returned: ${data.count} pending changes`);
+
+    if (data.count === 0) {
+      console.log('[PasswordSync] No pending changes for our emails');
+      return;
+    }
+
+    console.log(`[PasswordSync] Found ${data.count} pending password changes:`, data.pending_changes);
+
+    // Process each pending change
+    const confirmedIds: string[] = [];
+
+    for (const change of data.pending_changes) {
+      console.log(`[PasswordSync] Processing: ${change.email}`);
+      const success = await updateCredentialPassword(change.email, change.password, change.source);
+      if (success) {
+        confirmedIds.push(change.event_id);
+        console.log(`[PasswordSync] ✅ Updated: ${change.email}`);
+      } else {
+        console.log(`[PasswordSync] ❌ Failed to update: ${change.email}`);
+      }
+    }
+
+    // Confirm synced changes with API
+    if (confirmedIds.length > 0) {
+      await confirmSyncWithAPI(confirmedIds);
+    }
+  } catch (error) {
+    console.error('[PasswordSync] Poll error:', error);
+  }
+}
+
+// Update credential password in local database
+async function updateCredentialPassword(email: string, newPassword: string, source: string): Promise<boolean> {
+  if (!activeSession || !activeSession.masterPassword) {
+    console.log('[PasswordSync] Cannot update - vault locked');
+    return false;
+  }
+
+  try {
+    const db = getDb();
+    const encryptionKey = deriveEncryptionKey(activeSession.masterPassword, activeSession.salt);
+
+    // Get all credentials and find matching one by decrypting usernames
+    const credentials = db.prepare(`
+      SELECT id, title, username FROM credentials WHERE user_id = ?
+    `).all(activeSession.userId) as any[];
+
+    let matchedCredential: any = null;
+
+    for (const cred of credentials) {
+      if (cred.username) {
+        try {
+          const decryptedUsername = decryptPassword(cred.username, encryptionKey);
+          // Check if decrypted username matches the email (case-insensitive)
+          if (decryptedUsername && decryptedUsername.toLowerCase() === email.toLowerCase()) {
+            matchedCredential = cred;
+            break;
+          }
+        } catch (e) {
+          // Skip if decryption fails
+        }
+      }
+    }
+
+    if (!matchedCredential) {
+      console.log(`[PasswordSync] Email not found in vault: ${email}`);
+      return false;
+    }
+
+    // Encrypt the new password
+    const encryptedPassword = encryptPassword(newPassword, encryptionKey);
+
+    // Update the credential
+    db.prepare(`
+      UPDATE credentials
+      SET password = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND user_id = ?
+    `).run(encryptedPassword, matchedCredential.id, activeSession.userId);
+
+    // Decrypt title for logging (title might also be encrypted)
+    let displayTitle = matchedCredential.title;
+    try {
+      displayTitle = decryptPassword(matchedCredential.title, encryptionKey) || matchedCredential.title;
+    } catch (e) {
+      // Use as-is if not encrypted
+    }
+
+    console.log(`[PasswordSync] ✅ Updated password for '${displayTitle}' (ID: ${matchedCredential.id}) via ${source}`);
+    return true;
+  } catch (error) {
+    console.error('[PasswordSync] Update error:', error);
+    return false;
+  }
+}
+
+// Confirm synced changes with Connector API
+async function confirmSyncWithAPI(eventIds: string[]) {
+  try {
+    const response = await fetch(`${CONNECTOR_API_NGROK_URL}/api/vault/confirm-sync`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Vault-Key': VAULT_API_KEY,
+        'ngrok-skip-browser-warning': 'true'
+      },
+      body: JSON.stringify({ event_ids: eventIds })
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      console.log(`[PasswordSync] ✅ Confirmed ${data.confirmed_count} synced changes with API`);
+    }
+  } catch (error) {
+    console.error('[PasswordSync] Confirm error:', error);
+  }
+}
+
+// Start/stop polling
+function startPasswordSyncPolling() {
+  if (syncPollingInterval) return;
+
+  console.log('[PasswordSync] Starting polling (every 30s)...');
+  syncPollingInterval = setInterval(pollForPendingPasswordChanges, SYNC_POLL_INTERVAL);
+
+  // Also poll immediately
+  pollForPendingPasswordChanges();
+}
+
+function stopPasswordSyncPolling() {
+  if (syncPollingInterval) {
+    clearInterval(syncPollingInterval);
+    syncPollingInterval = null;
+    console.log('[PasswordSync] Stopped polling');
   }
 }
 
@@ -1134,6 +1352,9 @@ ipcMain.handle('auth:login', async (event, { username, password }) => {
     
     console.log('User authenticated and persisted (expires in 30 days):', username);
 
+    // Start polling for password sync from Connector API
+    startPasswordSyncPolling();
+
     return {
       success: true,
       user: {
@@ -1228,6 +1449,8 @@ ipcMain.handle('auth:logout', async (event) => {
   activeSession = null;
   // Clear persisted user on logout
   store.delete('user');
+  // Stop password sync polling
+  stopPasswordSyncPolling();
   console.log('User logged out and session cleared');
   return { success: true };
 });
@@ -1266,6 +1489,12 @@ ipcMain.handle('auth:verifyMasterPassword', async (event, { masterPassword }) =>
         // Continue anyway since password hash was verified
       }
     }
+
+    // Store master password for vault operations (needed for password sync)
+    activeSession.masterPassword = masterPassword;
+
+    // Start polling for password sync (vault is now unlocked)
+    startPasswordSyncPolling();
 
     return { success: true };
   } catch (error: any) {
@@ -1508,6 +1737,108 @@ ipcMain.handle('categories:delete', async (event, { id }) => {
     return { success: false, error: error.message || 'Failed to delete category' };
   }
 });
+
+// ============================================================================
+// API IPC HANDLERS - API KEYS
+// ============================================================================
+
+// Get all API keys (masked)
+ipcMain.handle('apikeys:fetch', async (event) => {
+  try {
+    if (!activeSession) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    const db = getDb();
+    const apiKeys = db.prepare(`
+      SELECT id, provider, api_key, created_at, updated_at
+      FROM api_keys WHERE user_id = ? ORDER BY provider
+    `).all(activeSession.userId) as any[];
+
+    // Mask API keys - show only last 3 characters
+    const maskedKeys = apiKeys.map(key => ({
+      ...key,
+      api_key_masked: key.api_key.length > 3
+        ? '•'.repeat(key.api_key.length - 3) + key.api_key.slice(-3)
+        : '•••',
+      api_key: undefined // Don't send actual key
+    }));
+
+    return { success: true, apiKeys: maskedKeys };
+  } catch (error: any) {
+    console.error('Fetch API keys error:', error);
+    return { success: false, error: error.message || 'Failed to fetch API keys' };
+  }
+});
+
+// Create or update API key
+ipcMain.handle('apikeys:save', async (event, { provider, apiKey }) => {
+  try {
+    if (!activeSession) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    if (!provider || !apiKey) {
+      return { success: false, error: 'Provider and API key are required' };
+    }
+
+    const db = getDb();
+
+    // Check if key exists for this provider
+    const existing = db.prepare(
+      'SELECT id FROM api_keys WHERE user_id = ? AND provider = ?'
+    ).get(activeSession.userId, provider);
+
+    if (existing) {
+      // Update existing key
+      db.prepare(`
+        UPDATE api_keys SET api_key = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ? AND provider = ?
+      `).run(apiKey, activeSession.userId, provider);
+    } else {
+      // Insert new key
+      db.prepare(`
+        INSERT INTO api_keys (user_id, provider, api_key) VALUES (?, ?, ?)
+      `).run(activeSession.userId, provider, apiKey);
+    }
+
+    return { success: true };
+  } catch (error: any) {
+    console.error('Save API key error:', error);
+    return { success: false, error: error.message || 'Failed to save API key' };
+  }
+});
+
+// Delete API key
+ipcMain.handle('apikeys:delete', async (event, { provider }) => {
+  try {
+    if (!activeSession) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    const db = getDb();
+    const result = db.prepare(
+      'DELETE FROM api_keys WHERE user_id = ? AND provider = ?'
+    ).run(activeSession.userId, provider);
+
+    return { success: result.changes > 0 };
+  } catch (error: any) {
+    console.error('Delete API key error:', error);
+    return { success: false, error: error.message || 'Failed to delete API key' };
+  }
+});
+
+// Get API key for internal use (not exposed to renderer)
+function getApiKeyForProvider(provider: string): string | null {
+  if (!activeSession) return null;
+
+  const db = getDb();
+  const result = db.prepare(
+    'SELECT api_key FROM api_keys WHERE user_id = ? AND provider = ?'
+  ).get(activeSession.userId, provider) as any;
+
+  return result?.api_key || null;
+}
 
 // ============================================================================
 // API IPC HANDLERS - NOTES
@@ -1834,10 +2165,11 @@ ipcMain.handle('backup:getPath', async () => {
 
 ipcMain.handle('openai:analyzeEmail', async (event, { subject, body }) => {
   try {
-    const apiKey = process.env.OPENAI_API_KEY;
+    // Get API key from database (user-provided) or fallback to env
+    const apiKey = getApiKeyForProvider('openai') || process.env.OPENAI_API_KEY;
 
     if (!apiKey) {
-      return { success: false, error: 'OpenAI API key not configured' };
+      return { success: false, error: 'OpenAI API key not configured. Add your API key in the API Keys section.' };
     }
 
     // Spacemail.com Knowledge Base
@@ -1992,10 +2324,11 @@ Respond in this exact JSON format:
 // Reformat email according to Spacemail requirements
 ipcMain.handle('openai:reformatEmail', async (event, { subject, body }) => {
   try {
-    const apiKey = process.env.OPENAI_API_KEY;
+    // Get API key from database (user-provided) or fallback to env
+    const apiKey = getApiKeyForProvider('openai') || process.env.OPENAI_API_KEY;
 
     if (!apiKey) {
-      return { success: false, error: 'OpenAI API key not configured' };
+      return { success: false, error: 'OpenAI API key not configured. Add your API key in the API Keys section.' };
     }
 
     // Spacemail.com Knowledge Base for reformatting

@@ -98,6 +98,20 @@ export function initDb() {
         )
       `);
 
+      // Create api_keys table for storing encrypted API keys
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS api_keys (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          provider TEXT NOT NULL,
+          api_key TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          UNIQUE(user_id, provider)
+        )
+      `);
+
       console.log('All database tables created/verified');
     } catch (error) {
       console.error('Database initialization error:', error);

@@ -1,4 +1,4 @@
-# EsPass v1.2.0 - Security Enhanced Release
+# EsPass v1.0.6 - Security Enhanced Release
 
 **Release Date:** November 7, 2025  
 **Build Status:** ✅ Ready  

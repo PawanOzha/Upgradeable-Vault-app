@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, net } from 'electron';
+import { app, BrowserWindow, ipcMain, net, shell } from 'electron';
 import { spawn, exec, ChildProcess } from 'child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -17,6 +17,7 @@ import { verifyPassword, generateSalt, hashPassword, checkLoginRateLimit, record
 import { deriveEncryptionKey, encryptPassword, decryptPassword } from './lib/encryption.js';
 import os from 'os';
 import { autoUpdater } from 'electron-updater';
+import { initMailIPC, setMailWindow } from './mail/mail-ipc.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -58,6 +59,7 @@ const store = new Store();
 // Global variables
 let mainWindow: BrowserWindow | null = null;
 let stickyNoteWindows = new Map<string, BrowserWindow>();
+let mailWindow: BrowserWindow | null = null;
 
 // ============================================================================
 // AUTO-UPDATER CONFIGURATION
@@ -984,6 +986,74 @@ const createStickyNoteWindow = (noteId: string, noteData: NoteData = {}): Browse
   return noteWindow;
 };
 
+const createMailWindow = (): BrowserWindow | undefined => {
+  console.log('Creating Es Mail window...');
+
+  // Check if mail window already exists
+  if (mailWindow && !mailWindow.isDestroyed()) {
+    mailWindow.focus();
+    return mailWindow;
+  }
+
+  // Determine preload script path
+  const preloadPath = path.join(__dirname, 'preload.mjs');
+  console.log('[Mail Window] Preload script path:', preloadPath);
+  console.log('[Mail Window] Preload script exists:', fs.existsSync(preloadPath));
+
+  // Create new mail window (same size as main app)
+  // CRITICAL FIX: Use exact same webPreferences as main window
+  mailWindow = new BrowserWindow({
+    width: 900,
+    height: 600,
+    minWidth: 800,
+    minHeight: 600,
+    frame: false,
+    title: 'Es Mail - Email Client',
+    icon: path.join(process.env.VITE_PUBLIC!, 'favicon.ico'),
+    webPreferences: {
+      nodeIntegration: false,      // Must match main window
+      contextIsolation: true,       // Must match main window
+      preload: preloadPath,
+      webSecurity: !isDev           // Must match main window
+      // NOTE: Removed 'sandbox: false' to match main window config
+    },
+    show: false,
+    backgroundColor: '#262624',
+    skipTaskbar: false,
+    resizable: true
+  });
+
+  mailWindow.once('ready-to-show', () => {
+    mailWindow?.show();
+    // Don't set zoom - keep it 100% (normal size)
+  });
+
+  // Load mail window HTML
+  if (VITE_DEV_SERVER_URL) {
+    // Development mode - load from dev server
+    mailWindow.loadURL(`${VITE_DEV_SERVER_URL}mail-window.html`);
+  } else {
+    // Production mode - load from built files
+    mailWindow.loadFile(path.join(RENDERER_DIST, 'mail-window.html'));
+  }
+
+  // Open DevTools in development for debugging
+  if (isDev) {
+    mailWindow.webContents.openDevTools();
+  }
+
+  mailWindow.on('closed', () => {
+    setMailWindow(null); // Clear mail window reference
+    mailWindow = null;
+    console.log('Mail window closed');
+  });
+
+  // Set mail window reference for IDLE notifications
+  setMailWindow(mailWindow);
+
+  return mailWindow;
+};
+
 // ============================================================================
 // IPC HANDLERS
 // ============================================================================
@@ -1008,6 +1078,16 @@ ipcMain.on('window-maximize', () => {
 ipcMain.on('window-close', () => {
   if (mainWindow) {
     mainWindow.close();
+  }
+});
+
+// Open external URL in default browser
+ipcMain.on('open-external-url', async (event, url: string) => {
+  console.log('[Main] Opening external URL:', url);
+  try {
+    await shell.openExternal(url);
+  } catch (error) {
+    console.error('[Main] Failed to open external URL:', error);
   }
 });
 
@@ -1059,6 +1139,35 @@ ipcMain.handle('get-window-bounds', (event): WindowBounds | null => {
     return window.getBounds();
   }
   return null;
+});
+
+// Open Es Mail window (separate sandboxed window)
+ipcMain.on('open-mail-window', () => {
+  console.log('Received request to open Es Mail window');
+  createMailWindow();
+});
+
+// Mail window control handlers
+ipcMain.on('mail-window-minimize', () => {
+  if (mailWindow) {
+    mailWindow.minimize();
+  }
+});
+
+ipcMain.on('mail-window-maximize', () => {
+  if (mailWindow) {
+    if (mailWindow.isMaximized()) {
+      mailWindow.restore();
+    } else {
+      mailWindow.maximize();
+    }
+  }
+});
+
+ipcMain.on('mail-window-close', () => {
+  if (mailWindow) {
+    mailWindow.close();
+  }
 });
 
 // Get extension app ID (permanent)
@@ -2442,6 +2551,259 @@ Respond in this exact JSON format:
   }
 });
 
+// Universal Email Validator - Using comprehensive deliverability rules
+ipcMain.handle('openai:validateEmail', async (event, { subject, body }) => {
+  try {
+    const apiKey = getApiKeyForProvider('openai') || process.env.OPENAI_API_KEY;
+
+    if (!apiKey) {
+      return { success: false, error: 'OpenAI API key not configured. Add your API key in the API Keys section.' };
+    }
+
+    const universalRules = `
+THE UNIVERSAL RULES OF EMAIL DELIVERABILITY
+
+CRITICAL ANTI-SPAM CHECKLIST:
+
+❌ NEVER USE:
+- All caps in subject
+- Multiple exclamation marks (!!!)
+- Spam trigger words (FREE, URGENT, WINNER, CLAIM NOW, ACT NOW, LIMITED TIME, CONGRATULATIONS)
+- Shortened URLs (bit.ly, tinyurl, cutt.ly)
+- Generic greetings (Dear Customer, Dear Sir/Madam)
+- Excessive emojis (more than 2 in subject, more than 5 in body)
+- Words like "Test" or "Testing" in subject
+- Question marks at end of subject
+- Trailing spaces in subject or lines
+- Excessive punctuation (!!!, ???, ...)
+
+✅ ALWAYS INCLUDE:
+- Clear, specific subject (40-50 characters ideal)
+- Personal greeting with name when available
+- Well-structured body with proper paragraphs
+- Professional signature
+- Contact information
+- Unsubscribe link (for bulk/marketing emails)
+
+CONTENT RULES:
+✔ Subject Line:
+- 40-50 characters ideal
+- Clear and descriptive
+- No misleading clickbait
+- Proper capitalization (not all caps)
+- No trailing punctuation
+- No spam trigger words
+
+✔ Email Body:
+- 100-500 words ideal for engagement
+- Well-structured paragraphs
+- Proper grammar and spelling
+- Professional, conversational tone
+- No excessive formatting (colors, fonts, sizes)
+- Balanced text-to-image ratio (80:20)
+
+✔ Language & Tone:
+- Professional but friendly
+- No hyperbolic claims
+- No urgency manipulation
+- Proper grammar
+- No excessive punctuation
+
+✔ Links:
+- Use full URLs, never shortened
+- Maximum 3-5 links for cold emails
+- Descriptive anchor text, not "click here"
+- Internal links safer than external
+
+✔ Structure:
+- Personal greeting
+- Clear introduction
+- Well-organized content
+- Professional signature with name and contact
+- Unsubscribe option for marketing
+
+ENGAGEMENT FACTORS:
+- Personalization increases deliverability
+- Recipients are more likely to engage with:
+  * Clear value proposition
+  * Relevant content
+  * Professional formatting
+  * Trustworthy sender information
+`;
+
+    const prompt = `You are a universal email deliverability expert. Analyze the following email against comprehensive anti-spam and deliverability standards used by Gmail, Outlook, Yahoo, and all major email providers.
+
+${universalRules}
+
+EMAIL TO ANALYZE:
+
+SUBJECT: ${subject || '(empty)'}
+
+BODY:
+${body || '(empty)'}
+
+Thoroughly analyze this email and provide:
+1. Deliverability score (0-100, where 100 is perfect)
+2. Summary assessment
+3. All specific issues found (with severity levels)
+4. Actionable suggestions for each issue
+5. Specific word/phrase replacements to improve deliverability
+
+Respond in this exact JSON format:
+{
+  "score": <number 0-100>,
+  "rating": "<Excellent|Good|Fair|Poor>",
+  "summary": "<one sentence overall assessment>",
+  "issues": [
+    {
+      "severity": "high|medium|low",
+      "location": "subject|body",
+      "issue": "<specific problem>",
+      "badText": "<exact problematic text>",
+      "suggestion": "<actionable fix>",
+      "betterText": "<specific replacement text>"
+    }
+  ],
+  "improvements": [
+    "<specific improvement recommendations>"
+  ]
+}`;
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a universal email deliverability expert. Always respond with valid JSON only, no markdown formatting. Be thorough and specific in identifying spam triggers and deliverability issues.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.2,
+        max_tokens: 2000
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error('[OpenAI] API error:', errorData);
+      return { success: false, error: `API error: ${response.status}` };
+    }
+
+    const data = await response.json();
+    const content = data.choices[0]?.message?.content;
+
+    if (!content) {
+      return { success: false, error: 'No response from OpenAI' };
+    }
+
+    try {
+      const validation = JSON.parse(content);
+      return { success: true, validation };
+    } catch (parseError) {
+      console.error('[OpenAI] Failed to parse response:', content);
+      return { success: false, error: 'Failed to parse AI response' };
+    }
+  } catch (error: any) {
+    console.error('[OpenAI] Error:', error);
+    return { success: false, error: error.message || 'Failed to validate email' };
+  }
+});
+
+// Generate professional email from user's draft
+ipcMain.handle('openai:generateEmail', async (event, { subject, body, context }) => {
+  try {
+    const apiKey = getApiKeyForProvider('openai') || process.env.OPENAI_API_KEY;
+
+    if (!apiKey) {
+      return { success: false, error: 'OpenAI API key not configured. Add your API key in the API Keys section.' };
+    }
+
+    const prompt = `You are a professional email writing assistant. The user has written a draft email that needs to be polished into a professional, deliverable email that won't trigger spam filters.
+
+USER'S DRAFT:
+Subject: ${subject || '(none provided)'}
+Body: ${body || '(none provided)'}
+${context ? `Context: ${context}` : ''}
+
+Generate a professional email that:
+1. Has a clear, specific subject line (40-50 characters)
+2. Uses proper professional formatting
+3. Maintains the user's intent and message
+4. Avoids ALL spam triggers
+5. Has proper structure with greeting, body, and signature
+6. Uses conversational but professional tone
+7. Is engaging and likely to get a response
+
+CRITICAL: Avoid these spam triggers:
+- No all caps, excessive punctuation, spam words
+- No urgency manipulation or clickbait
+- No shortened URLs
+- Clear and honest communication
+
+Respond in this exact JSON format:
+{
+  "subject": "<professional subject line>",
+  "body": "<complete professional email body with proper formatting, greeting, and signature placeholder>"
+}`;
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a professional email writing assistant. Always respond with valid JSON only, no markdown. Create emails that are professional, deliverable, and avoid spam triggers while maintaining the user\'s original intent.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.6,
+        max_tokens: 1500
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error('[OpenAI] API error:', errorData);
+      return { success: false, error: `API error: ${response.status}` };
+    }
+
+    const data = await response.json();
+    const content = data.choices[0]?.message?.content;
+
+    if (!content) {
+      return { success: false, error: 'No response from OpenAI' };
+    }
+
+    try {
+      const generated = JSON.parse(content);
+      return { success: true, generated };
+    } catch (parseError) {
+      console.error('[OpenAI] Failed to parse response:', content);
+      return { success: false, error: 'Failed to parse AI response' };
+    }
+  } catch (error: any) {
+    console.error('[OpenAI] Error:', error);
+    return { success: false, error: error.message || 'Failed to generate email' };
+  }
+});
+
 // ============================================================================
 // APP EVENT HANDLERS
 // ============================================================================
@@ -2452,6 +2814,14 @@ app.whenReady().then(async () => {
     console.log('Initializing database...');
     initDb();
     console.log('Database initialized');
+
+    // Initialize Mail IPC handlers
+    console.log('Initializing Mail module...');
+    initMailIPC(
+      () => activeSession,  // Session getter
+      getDb                 // Database getter (already a function)
+    );
+    console.log('Mail module initialized');
 
     // Perform automatic daily backup
     console.log('[Backup] Performing automatic backup...');
@@ -2501,6 +2871,12 @@ app.on('activate', async () => {
 });
 
 app.on('before-quit', () => {
+  // Close mail window
+  if (mailWindow && !mailWindow.isDestroyed()) {
+    mailWindow.close();
+  }
+  mailWindow = null;
+
   // Close all sticky note windows
   stickyNoteWindows.forEach((window) => {
     if (!window.isDestroyed()) {

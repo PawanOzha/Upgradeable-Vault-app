@@ -1,7 +1,7 @@
 {
   "name": "espass",
   "private": true,
-  "version": "1.0.6",
+  "version": "1.0.7",
   "type": "module",
   "author": "Pawan Ojha",
   "description": "EsPass - Secure Password Manager with Enhanced Security",
@@ -27,7 +27,8 @@
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
-      "public/**/*"
+      "public/**/*",
+      "mail-window.html"
     ],
     "win": {
       "target": [
@@ -43,20 +44,27 @@
     }
   },
   "dependencies": {
-    "better-sqlite3": "^12.4.1",
+    "@types/mailparser": "^3.4.6",
+    "@types/nodemailer": "^7.0.4",
+    "better-sqlite3": "^12.4.6",
     "dotenv": "^17.2.3",
     "electron-store": "^11.0.2",
     "electron-updater": "^6.6.2",
+    "imapflow": "^1.1.1",
     "lucide-react": "^0.548.0",
+    "mailparser": "^3.9.0",
+    "nodemailer": "^7.0.10",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.26.0",
+    "react-window": "^2.2.3",
     "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
+    "@types/react-window": "^1.8.8",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.20",
     "electron": "^30.0.1",

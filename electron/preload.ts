@@ -37,6 +37,15 @@ const electronAPI = {
   stickyNoteMinimize: () => ipcRenderer.send('sticky-note-minimize'),
   stickyNoteClose: () => ipcRenderer.send('sticky-note-close'),
   stickyNoteToggleAlwaysOnTop: () => ipcRenderer.send('sticky-note-toggle-always-on-top'),
+
+  // ========== MAIL WINDOW CONTROL ==========
+  openMailWindow: () => ipcRenderer.send('open-mail-window'),
+  mailWindowMinimize: () => ipcRenderer.send('mail-window-minimize'),
+  mailWindowMaximize: () => ipcRenderer.send('mail-window-maximize'),
+  mailWindowClose: () => ipcRenderer.send('mail-window-close'),
+
+  // ========== EXTERNAL LINK ==========
+  openExternal: (url: string) => ipcRenderer.send('open-external-url', url),
   
   // ========== STICKY NOTE MANAGEMENT ==========
   openStickyNote: (noteId: string, noteData?: NoteData) =>
@@ -159,7 +168,78 @@ const electronAPI = {
       ipcRenderer.on('update-status', listener);
       return () => ipcRenderer.removeListener('update-status', listener);
     }
-  }
+  },
+
+  // ========== MAIL API ==========
+  mail: {
+    // Account Management
+    getAccounts: () => ipcRenderer.invoke('mail:getAccounts'),
+    addAccount: (account: any, password: string) =>
+      ipcRenderer.invoke('mail:addAccount', { account, password }),
+    deleteAccount: (accountId: string) =>
+      ipcRenderer.invoke('mail:deleteAccount', { accountId }),
+    testConnection: (account: any, password: string) =>
+      ipcRenderer.invoke('mail:testConnection', { account, password }),
+
+    // Folder Management
+    getFolders: (accountId: string) =>
+      ipcRenderer.invoke('mail:getFolders', { accountId }),
+    syncFolders: (accountId: string, password: string) =>
+      ipcRenderer.invoke('mail:syncFolders', { accountId, password }),
+
+    // Email Operations
+    getEmails: (accountId: string, folder: string, password: string, limit?: number) =>
+      ipcRenderer.invoke('mail:getEmails', { accountId, folder, password, limit }),
+    getEmailsFresh: (accountId: string, folder: string, password: string, limit?: number) =>
+      ipcRenderer.invoke('mail:getEmailsFresh', { accountId, folder, password, limit }),
+    getEmail: (emailId: string) =>
+      ipcRenderer.invoke('mail:getEmail', { emailId }),
+    fetchEmailBody: (accountId: string, emailId: string, password: string) =>
+      ipcRenderer.invoke('mail:fetchEmailBody', { accountId, emailId, password }),
+    sendEmail: (accountId: string, draft: any, password: string) =>
+      ipcRenderer.invoke('mail:sendEmail', { accountId, draft, password }),
+    markAsRead: (accountId: string, emailId: string, isRead: boolean, password: string) =>
+      ipcRenderer.invoke('mail:markAsRead', { accountId, emailId, isRead, password }),
+    deleteEmail: (accountId: string, emailId: string, password: string) =>
+      ipcRenderer.invoke('mail:deleteEmail', { accountId, emailId, password }),
+
+    // Attachment Operations
+    openAttachment: (attachmentPath: string) =>
+      ipcRenderer.invoke('mail:openAttachment', { attachmentPath }),
+
+    // IMAP IDLE (Push Notifications)
+    startIdle: (accountId: string, folder: string) =>
+      ipcRenderer.invoke('mail:startIdle', { accountId, folder }),
+    stopIdle: (accountId: string) =>
+      ipcRenderer.invoke('mail:stopIdle', { accountId }),
+    onNewMail: (callback: (data: { accountId: string; folder: string }) => void) => {
+      const listener = (_event: IpcRendererEvent, data: any) => callback(data);
+      ipcRenderer.on('mail:newMail', listener);
+      return () => ipcRenderer.removeListener('mail:newMail', listener);
+    },
+
+    // Reputation Checker
+    checkReputation: (accountId: string) =>
+      ipcRenderer.invoke('mail:checkReputation', { accountId }),
+
+    // Signature Operations
+    getSignatures: (accountId: string) =>
+      ipcRenderer.invoke('mail:getSignatures', { accountId }),
+    getDefaultSignature: (accountId: string) =>
+      ipcRenderer.invoke('mail:getDefaultSignature', { accountId }),
+    addSignature: (accountId: string, name: string, htmlContent: string, isDefault: boolean) =>
+      ipcRenderer.invoke('mail:addSignature', { accountId, name, htmlContent, isDefault }),
+    updateSignature: (signatureId: string, name: string, htmlContent: string, isDefault: boolean) =>
+      ipcRenderer.invoke('mail:updateSignature', { signatureId, name, htmlContent, isDefault }),
+    deleteSignature: (signatureId: string) =>
+      ipcRenderer.invoke('mail:deleteSignature', { signatureId }),
+  },
+
+  // ========== AI EMAIL VALIDATION ==========
+  validateEmail: (subject: string, body: string) =>
+    ipcRenderer.invoke('openai:validateEmail', { subject, body }),
+  generateEmail: (subject: string, body: string, context?: string) =>
+    ipcRenderer.invoke('openai:generateEmail', { subject, body, context }),
 };
 
 // ============================================================================
@@ -176,7 +256,11 @@ const ALLOWED_SEND_CHANNELS = [
   'sticky-note-close',
   'sticky-note-toggle-always-on-top',
   'open-sticky-note',
-  'close-sticky-note-window'
+  'close-sticky-note-window',
+  'open-mail-window',
+  'mail-window-minimize',
+  'mail-window-maximize',
+  'mail-window-close'
 ];
 
 const ALLOWED_RECEIVE_CHANNELS = [
@@ -186,7 +270,8 @@ const ALLOWED_RECEIVE_CHANNELS = [
   'window-bounds-changed',
   'sticky-note-always-on-top-changed',
   'clear-session-storage',
-  'prompt-master-password'
+  'prompt-master-password',
+  'mail:newMail'
 ];
 
 const ALLOWED_INVOKE_CHANNELS = [
@@ -216,8 +301,32 @@ const ALLOWED_INVOKE_CHANNELS = [
   'backup:getPath',
   'openai:analyzeEmail',
   'openai:reformatEmail',
+  'openai:validateEmail',
+  'openai:generateEmail',
   'check-for-updates',
   'quit-and-install',
+  'mail:getAccounts',
+  'mail:addAccount',
+  'mail:deleteAccount',
+  'mail:testConnection',
+  'mail:getFolders',
+  'mail:syncFolders',
+  'mail:getEmails',
+  'mail:getEmailsFresh',
+  'mail:getEmail',
+  'mail:fetchEmailBody',
+  'mail:sendEmail',
+  'mail:markAsRead',
+  'mail:deleteEmail',
+  'mail:openAttachment',
+  'mail:startIdle',
+  'mail:stopIdle',
+  'mail:checkReputation',
+  'mail:getSignatures',
+  'mail:getDefaultSignature',
+  'mail:addSignature',
+  'mail:updateSignature',
+  'mail:deleteSignature',
   'get-app-version',
   'get-app-id',
   'get-window-bounds',

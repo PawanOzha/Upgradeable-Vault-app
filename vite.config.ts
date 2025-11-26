@@ -21,6 +21,9 @@ export default defineConfig({
                 'ws',
                 'bufferutil',
                 'utf-8-validate',
+                'imapflow',
+                'nodemailer',
+                'mailparser',
               ],
             },
           },
@@ -43,6 +46,14 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+    },
+  },
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        mail: path.resolve(__dirname, 'mail-window.html'),
+      },
     },
   },
 })

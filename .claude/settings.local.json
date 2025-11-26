@@ -2,7 +2,25 @@
   "permissions": {
     "allow": [
       "Bash(npm install:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "mcp__ide__getDiagnostics",
+      "Bash(npm run build:local:*)",
+      "Bash(npm audit:*)",
+      "Bash(test -f:*)",
+      "Bash(npm run build:*)",
+      "Bash(npx vite build)",
+      "Bash(npm run dev:*)",
+      "Bash(npx kill-port:*)",
+      "Bash(taskkill:*)",
+      "Bash(nul)",
+      "Bash(timeout /t 2 /nobreak)",
+      "Bash(timeout /t 15 /nobreak)",
+      "Bash(exit 0)",
+      "Bash(dir:*)",
+      "Bash(ping:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)"
     ],
     "deny": [],
     "ask": []
